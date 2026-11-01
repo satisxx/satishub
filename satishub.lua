@@ -79,7 +79,6 @@ local state = {
 	savedKey = "",
 	rgbEnabled = true,
 	themeColor = "",
-	hideMessages = true,
 }
 
 -- ===== Settings saved to file (survive teleports) =====
@@ -123,63 +122,9 @@ if fromQueue then
 	end
 end
 
--- ===== Hide game messages =====
--- The game shows things like "Not enough money!" through the show_message remote.
--- Disabling the client-side connections stops those popups without touching the game logic.
-local messageEvent
-do
-	local s2c = endpoints and endpoints:FindFirstChild("server_to_client")
-	messageEvent = s2c and s2c:FindFirstChild("show_message")
-end
-
-local messageConnections = {}
-local messageConnSet = {}
-
-local function refreshMessageConnections()
-	-- The remote can appear a moment after the script starts, so look it up again
-	-- if it was not found yet (or if the game recreated it).
-	if not messageEvent or not messageEvent.Parent then
-		local eps = (endpoints and endpoints.Parent) and endpoints or ReplicatedStorage:FindFirstChild("endpoints")
-		local s2c = eps and eps:FindFirstChild("server_to_client")
-		messageEvent = s2c and s2c:FindFirstChild("show_message")
-	end
-	if not messageEvent or not getconnections then
-		return
-	end
-	local ok, conns = pcall(getconnections, messageEvent.OnClientEvent)
-	if not ok or type(conns) ~= "table" then
-		return
-	end
-	for _, conn in ipairs(conns) do
-		if not messageConnSet[conn] then
-			messageConnSet[conn] = true
-			messageConnections[#messageConnections + 1] = conn
-		end
-		pcall(function()
-			if state.hideMessages then
-				conn:Disable()
-			else
-				conn:Enable()
-			end
-		end)
-	end
-end
-
-refreshMessageConnections()
-
-task.spawn(function()
-	while alive() do
-		task.wait(1)
-		if not alive() then
-			break
-		end
-		refreshMessageConnections()
-	end
-end)
-
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-2026-11-01-settings-visible-v2"
+local SCRIPT_BUILD = "SatisHub-2026-11-01-no-hide-messages"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -2525,13 +2470,8 @@ makeToggle(settingsPage, "Auto Execute On Teleport", 6, function(v)
 end, state.autoExecTeleport)
 autoExecReady = true
 
-makeToggle(settingsPage, "Hide Game Messages", 7, function(v)
-	state.hideMessages = v
-	refreshMessageConnections()
-end, state.hideMessages)
-
 -- Display the new settings first so they are easy to find.
-makeLabel(settingsPage, "BUILD: SETTINGS-V2 | Auto Scan + Incognito", 8)
+makeLabel(settingsPage, "BUILD: UPGRADE-THROTTLED | Auto Scan + Incognito", 8)
 
 makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
     state.autoScanUnits = v
@@ -2727,21 +2667,44 @@ local function myUnits()
 	return list
 end
 
--- Auto upgrade: upgrades every unit of yours that is on the map
-local UPGRADE_INTERVALO = 1
+-- Auto upgrade: throttle requests to avoid flooding game notifications.
+-- Upgrade only one unit per cycle; failed requests trigger a longer cooldown.
+local UPGRADE_INTERVALO = 8
+local UPGRADE_REJECT_COOLDOWN = 25
+local upgradeIndex = 0
+local upgradeNextAt = 0
+local upgradeWasOn = false
+
 task.spawn(function()
-	while alive() do
-		if state.autoUpgrade then
-			for _, unit in ipairs(myUnits()) do
-				if not (alive() and state.autoUpgrade) then
-					break
-				end
-				invoke("upgrade_unit_ingame", unit)
-				task.wait(0.1)
-			end
-		end
-		task.wait(UPGRADE_INTERVALO)
-	end
+    while alive() do
+        if state.autoUpgrade then
+            if not upgradeWasOn then
+                upgradeNextAt = 0
+                upgradeIndex = 0
+            end
+            if os.clock() >= upgradeNextAt then
+                local units = myUnits()
+                if #units > 0 then
+                    upgradeIndex = (upgradeIndex % #units) + 1
+                    local unit = units[upgradeIndex]
+                    -- InvokeServer may return nil even on success. A false or error
+                    -- indicates rejection; wait longer before another request.
+                    local ok, result = invokeRet("upgrade_unit_ingame", unit)
+                    if not ok or result == false then
+                        upgradeNextAt = os.clock() + UPGRADE_REJECT_COOLDOWN
+                    else
+                        upgradeNextAt = os.clock() + UPGRADE_INTERVALO
+                    end
+                else
+                    upgradeNextAt = os.clock() + UPGRADE_INTERVALO
+                end
+            end
+        else
+            upgradeNextAt = 0
+        end
+        upgradeWasOn = state.autoUpgrade
+        task.wait(0.5)
+    end
 end)
 
 -- ===== Smart random placement =====
