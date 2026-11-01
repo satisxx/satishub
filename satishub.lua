@@ -75,6 +75,7 @@ local state = {
 	autoExecTeleport = true,
 	cardOption = "2",
 	savedKey = "",
+	rgbEnabled = true,
 	themeColor = "",
 	hideMessages = true,
 }
@@ -621,6 +622,7 @@ local function addRgbStroke(inst, thickness)
 	grad.Color = RAINBOW
 	grad.Parent = stroke
 	rgbGradients[#rgbGradients + 1] = grad
+	grad.Enabled = state.rgbEnabled
 	return stroke, grad
 end
 
@@ -632,7 +634,9 @@ task.spawn(function()
 		for i = #rgbGradients, 1, -1 do
 			local g = rgbGradients[i]
 			if g.Parent then
+				if state.rgbEnabled then
 				g.Rotation = rot
+			end
 			else
 				table.remove(rgbGradients, i)
 			end
@@ -871,7 +875,7 @@ local function makeToggle(parentObj, name, order, onChange, initial)
 		b.Text = name .. (on and ": ON" or ": OFF")
 		b.BackgroundColor3 = on and ON_COLOR or btnColor()
 		stroke.Color = on and WHITE or OFF_STROKE
-		grad.Enabled = on
+		grad.Enabled = on and state.rgbEnabled
 	end
 	toggleRefreshers[#toggleRefreshers + 1] = paint
 
@@ -980,6 +984,7 @@ local titleGrad = Instance.new("UIGradient")
 titleGrad.Color = RAINBOW
 titleGrad.Parent = titulo
 rgbGradients[#rgbGradients + 1] = titleGrad
+titleGrad.Enabled = state.rgbEnabled
 
 local minBtn = Instance.new("TextButton")
 minBtn.Size = UDim2.fromOffset(24, 24)
@@ -1283,6 +1288,8 @@ end)
 
 local placeStatus = makeLabel(mainPage, "Auto Place: scanning unit IDs...", 12)
 placeStatus.TextSize = 11
+placeStatus.TextWrapped = true
+placeStatus.Size = UDim2.new(1, -20, 0, 34)
 
 local scanBtn = makeButton(mainPage, "Scan Units", 13)
 scanBtn.MouseButton1Click:Connect(function()
@@ -2389,6 +2396,19 @@ playGameBtn.MouseButton1Click:Connect(function()
 	openGameMenu()
 end)
 
+-- Switch RGB animations and borders globally without changing toggle ON/OFF states.
+local function refreshRgb()
+    for _, grad in ipairs(rgbGradients) do
+        if grad and grad.Parent then
+            -- Toggle gradients are restored below according to their actual state.
+            grad.Enabled = state.rgbEnabled
+        end
+    end
+    for _, paint in ipairs(toggleRefreshers) do
+        paint()
+    end
+end
+
 -- SETTINGS page
 local settingsPage = makePage(body, 4)
 settingsPage.Visible = false
@@ -2475,6 +2495,11 @@ makeToggle(settingsPage, "Hide Game Messages", 7, function(v)
 	refreshMessageConnections()
 end, state.hideMessages)
 
+makeToggle(settingsPage, "RGB Effects", 8, function(v)
+    state.rgbEnabled = v
+    refreshRgb()
+end, state.rgbEnabled)
+
 -- ABOUT page
 local aboutPage = makePage(body, 6)
 aboutPage.Visible = false
@@ -2556,14 +2581,15 @@ caixaKey.FocusLost:Connect(function(enter)
 	end
 end)
 
--- Already verified before (e.g. after a teleport): skip the key screen
-if state.savedKey == KEY then
+-- Skip key only on a queued teleport when it was previously verified
+if fromQueue and state.savedKey == KEY then
 	keyPage.Visible = false
 	tabsRow.Visible = true
 	showTab("main")
 end
 
 applyTheme(currentTheme)
+refreshRgb()
 refreshTransparency()
 refreshTabs()
 
@@ -2671,12 +2697,12 @@ end)
 -- ===== Smart random placement =====
 -- Learns what kind of floor the spots you used are on, then picks random spots only on that floor,
 -- away from other units and from spots that failed. When a spot fails it moves on to another one.
-local PLACE_INTERVALO = 0.8
+local PLACE_INTERVALO = 1.5
 local MIN_SPACING = 3.5 -- minimum distance (studs) from other units
 local BAD_SPOT_RADIUS = 3 -- area blocked around a spot where placing failed
 local BAD_SPOT_TTL = 120 -- seconds a failed spot stays blocked
-local ATTEMPTS_PER_CYCLE = 4 -- different spots tried per cycle when one fails
-local NO_MONEY_AFTER = 8 -- this many failures in a row = probably no money / unit limit
+local ATTEMPTS_PER_CYCLE = 2 -- different spots tried per cycle when one fails
+local NO_MONEY_AFTER = 5 -- this many failures in a row = probably no money / unit limit
 
 local badSpots = {} -- confirmed bad spots { pos, t }
 local pendingBad = {} -- failures not confirmed yet (could just be no money)
@@ -2684,6 +2710,15 @@ local goodSpots = {} -- positions where a unit was placed successfully
 local idFails = {} -- consecutive failures per unit ID
 local failStreak = 0
 local placedCount = 0
+local placeLastError = ""
+local lastPlaceNotice = 0
+local function placeNotice(message)
+    placeLastError = tostring(message)
+    if os.clock() - lastPlaceNotice > 4 then
+        warn("[SatisHub Auto Place] " .. placeLastError)
+        lastPlaceNotice = os.clock()
+    end
+end
 
 local function flatDist(a, b)
 	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
@@ -3100,9 +3135,7 @@ local function pickSpot()
 		for _, p in ipairs(playerCenters) do
 			addTo(centers, p)
 		end
-		for _, p in ipairs(otherCenters) do
-			addTo(centers, p)
-		end
+        -- Do not place on other players' plots merely because our own positions failed.
 	end
 	if #centers == 0 then
 		return nil
@@ -3190,51 +3223,57 @@ local function pickId(ids)
 end
 
 -- Places one unit and checks if it really appeared (your unit count goes up)
+-- Returns success, reason. Do not treat a nil server response as confirmed placement.
 local function tryPlace(id, pos)
-	local before = #myUnits()
-	env.SatisHubAutoPlacing = true
-	local ok, res = invokeRet("spawn_unit", id, CFrame.new(pos))
-	env.SatisHubAutoPlacing = nil
-	if not ok or res == false then
-		return false
-	end
-	if getUnitsFolder() then
-		for _ = 1, 10 do
-			task.wait(0.12)
-			if #myUnits() > before then
-				addUnitId(id, true, true)
-				return true
-			end
-		end
-		return false
-	end
-	addUnitId(id, true, true)
-	return true
+    local before = #myUnits()
+    env.SatisHubAutoPlacing = true
+    local ok, res = invokeRet("spawn_unit", id, CFrame.new(pos))
+    env.SatisHubAutoPlacing = nil
+    if not ok then
+        return false, "Remote failed or unavailable: " .. tostring(res)
+    end
+    if res == false then
+        return false, "Server rejected placement"
+    end
+    if getUnitsFolder() then
+        for _ = 1, 20 do
+            if not (alive() and state.randomPlace) then
+                return false, "Placement cancelled"
+            end
+            task.wait(0.15)
+            if #myUnits() > before then
+                addUnitId(id, true, true)
+                return true
+            end
+        end
+        return false, "No new unit detected (server reply: " .. tostring(res) .. ")"
+    end
+    -- Without the units folder there is no trustworthy way to verify success.
+    return false, "_UNITS folder not found; cannot confirm placement"
 end
 
 local function collectUnitIds()
-	local list = {}
-	local seen = {}
-	local function add(id)
-		if type(id) == "string" and not seen[id] then
-			seen[id] = true
-			list[#list + 1] = id
-		end
-	end
-	for id in pairs(learned.ids) do
-		add(id)
-	end
-	for token in tostring(state.unitIds):gmatch("[^,;%s]+") do
-		local id = token
-		if id:sub(1, 1) ~= "{" then
-			id = "{" .. id .. "}"
-		end
-		add(id)
-		-- IDs typed by the user are a strong hint, so prefer them first.
-		learned.manual[id] = true
-		learned.likely[id] = true
-	end
-	return list
+    local list, seen = {}, {}
+    local function add(id)
+        if type(id) ~= "string" or not id:match(UUID_PATTERN) or seen[id] then return end
+        seen[id] = true
+        list[#list + 1] = id
+    end
+    -- Explicit unit IDs take priority; do not mix unrelated IDs from the world.
+    for token in tostring(state.unitIds or ""):gmatch("[^,;%s]+") do
+        local id = token
+        if id:sub(1, 1) ~= "{" then id = "{" .. id .. "}" end
+        if id:match(UUID_PATTERN) then
+            add(id)
+            learned.manual[id] = true
+            learned.likely[id] = true
+        end
+    end
+    if #list > 0 then return list end
+    -- If no manual ID was set, only use IDs gathered from the player's own UI / inventory.
+    for id in pairs(learned.likely) do add(id) end
+    for id in pairs(learned.confirmed) do add(id) end
+    return list
 end
 
 task.spawn(function()
@@ -3249,9 +3288,9 @@ task.spawn(function()
 			end
 		end
 		if #ids == 0 then
-			placeStatus.Text = "No IDs yet - open the shop or press Scan Units"
+			placeStatus.Text = "No unit IDs: enter yours or press Scan Units"
 		else
-			placeStatus.Text = ("IDs: %d | Spots: %d | Placed: %d"):format(#ids, #learned.positions + #goodSpots, placedCount)
+			placeStatus.Text = ("IDs: %d | Spots: %d | Placed: %d | %s"):format(#ids, #learned.positions + #goodSpots, placedCount, placeLastError:sub(1, 35))
 		end
 
 		-- fresh start every time the option is turned on
@@ -3271,12 +3310,15 @@ task.spawn(function()
 				end
 				local pos = pickSpot()
 				if not pos then
+                    placeNotice("No valid placement ground found. Place one unit manually or adjust radius.")
 					failStreak = failStreak + 1
 					break
 				end
 				local id = pickId(ids)
-				if tryPlace(id, pos) then
+                local placed, reason = tryPlace(id, pos)
+				if placed then
 					failStreak = 0
+                    placeLastError = "OK"
 					idFails[id] = 0
 					placedCount = placedCount + 1
 					goodSpots[#goodSpots + 1] = pos
@@ -3293,6 +3335,10 @@ task.spawn(function()
 					end
 					break
 				else
+                    placeNotice(reason or "Placement not confirmed")
+                    if reason and (reason:find("Remote failed", 1, true) or reason:find("_UNITS folder", 1, true)) then
+                        break
+                    end
 					-- this spot did not work: move on to another one right away
 					failStreak = failStreak + 1
 					idFails[id] = (idFails[id] or 0) + 1
