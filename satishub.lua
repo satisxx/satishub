@@ -64,6 +64,7 @@ local state = {
 	autoStart = false,
 	autoSkip = false,
 	autoReplay = false,
+	autoLeave = false,
 	autoCard = false,
 	randomCard = false,
 	autoJoinEvent = false,
@@ -1178,6 +1179,11 @@ end, state.autoSkip)
 makeToggle(mainPage, "Auto Replay", 3, function(v)
 	state.autoReplay = v
 end, state.autoReplay)
+
+-- Auto Leave sends the lobby vote after the actual end-of-match event.
+makeToggle(mainPage, "Auto Leave (Lobby)", 3.5, function(v)
+    state.autoLeave = v
+end, state.autoLeave)
 
 -- Auto Select Card and Random Card are mutually exclusive:
 -- turning one on turns the other one off.
@@ -2472,7 +2478,7 @@ end, state.autoExecTeleport)
 autoExecReady = true
 
 -- Display the new settings first so they are easy to find.
-makeLabel(settingsPage, "BUILD: KEYBIND-V1 | Auto Scan + Incognito", 8)
+makeLabel(settingsPage, "BUILD: AUTO-LEAVE-V1 | Keybind + Auto Scan", 8)
 
 makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
     state.autoScanUnits = v
@@ -2659,12 +2665,45 @@ end)
 -- Replay vote when the game finishes
 task.spawn(function()
 	while alive() do
-		if state.autoReplay then
+		if state.autoReplay and not state.autoLeave then
 			invoke("set_game_finished_vote", "replay")
 		end
 		task.wait(INTERVALO)
 	end
 end)
+
+-- ===== Auto Leave on victory OR defeat =====
+-- Cobalt's firesignal example describes an incoming server notification;
+-- do not call firesignal here, as it doesn't initiate a lobby teleport.
+-- The lobby vote value below is based on the game's existing finished-vote remote
+-- and may need adjustment if the game's server expects a different option.
+do
+    local eventFolder = endpoints and endpoints:FindFirstChild("server_to_client")
+    local finishedEvent = eventFolder and eventFolder:FindFirstChild("game_finished")
+    local leaveSent = false
+    if finishedEvent and finishedEvent:IsA("RemoteEvent") then
+        finishedEvent.OnClientEvent:Connect(function(result)
+            if not alive() or not state.autoLeave or leaveSent then return end
+            -- Ignore incomplete/unrelated event payloads; do not rely on victory flag.
+            if type(result) ~= "table" or type(result.stats) ~= "table" then return end
+            leaveSent = true
+            task.delay(2, function()
+                if not alive() or not state.autoLeave then return end
+                local ok, response = invokeRet("set_game_finished_vote", "lobby")
+                if ok then
+                    print("[SatisHub] Auto Leave: lobby vote sent after game_finished.")
+                    if response == false then
+                        warn("[SatisHub] Auto Leave: the server rejected the lobby vote; check the game's expected vote value.")
+                    end
+                else
+                    warn("[SatisHub] Auto Leave failed: " .. tostring(response))
+                end
+            end)
+        end)
+    else
+        warn("[SatisHub] Auto Leave: game_finished event not found in this server.")
+    end
+end
 
 -- Unit automation lives in a separate function to keep the main Luau chunk below the 200-local-register limit.
 local function startUnitAutomation()
