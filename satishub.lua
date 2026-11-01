@@ -176,7 +176,7 @@ end)
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01"
+local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01-fix2"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -226,28 +226,48 @@ end
 -- Code that runs in the next server: waits for the game, then loads the script.
 -- Order: embedded copy -> file read again in the new server -> URL.
 local function buildQueuedCode()
-	local quotedNames = {}
-	for _, n in ipairs(SCRIPT_FILE_NAMES) do
-		quotedNames[#quotedNames + 1] = ("%q"):format(n)
-	end
-	local parts = {
-		"repeat task.wait() until game:IsLoaded()",
-		"task.wait(2)",
-		"pcall(function() getgenv().SatisHubFromQueue = true end)",
-		"local ok, err = false, \"no script source found (save the script as satishub.lua in the workspace folder and execute it once)\"",
-	}
-	-- The script source is embedded directly, so the next server doesn't need to read any file
-	local src = readOwnFile()
-	if src then
-		parts[#parts + 1] = ("ok, err = pcall(function() loadstring(%s)() end)"):format(("%q"):format(src))
-	end
-	-- Fallback: read the saved file inside the new server
-	parts[#parts + 1] = ("if not ok then for _, n in ipairs({%s}) do local has = false pcall(function() has = isfile(n) end) if has then ok, err = pcall(function() loadstring(readfile(n))() end) if ok then break end end end end"):format(table.concat(quotedNames, ","))
-	if SCRIPT_URL ~= "" then
-		parts[#parts + 1] = ('if not ok then ok, err = pcall(function() loadstring(game:HttpGet("%s"))() end) end'):format(SCRIPT_URL)
-	end
-	parts[#parts + 1] = 'if not ok then warn("[SatisHub] auto execute failed: " .. tostring(err)) end'
-	return table.concat(parts, "\n")
+    local parts = {
+        "repeat task.wait() until game:IsLoaded()",
+        "task.wait(2)",
+        "pcall(function() local e = (type(getgenv) == 'function' and getgenv()) or _G; e.SatisHubFromQueue = true end)",
+        [[local function runSource(source, label)
+            if type(source) ~= "string" or source == "" then
+                return false, label .. ": empty or invalid source"
+            end
+            if type(loadstring) ~= "function" then
+                return false, "executor does not support loadstring"
+            end
+            local chunk, compileError = loadstring(source)
+            if type(chunk) ~= "function" then
+                return false, label .. " compilation: " .. tostring(compileError)
+            end
+            local ok, err = xpcall(chunk, function(e)
+                if debug and type(debug.traceback) == "function" then
+                    return debug.traceback(tostring(e), 2)
+                end
+                return tostring(e)
+            end)
+            if not ok then return false, label .. " runtime: " .. tostring(err) end
+            return true
+        end]],
+        "local ok, err = false, 'no valid script source found'",
+    }
+    -- Prefer the current version stored in the executor workspace.
+    local src, _, isCurrent = readOwnFile()
+    if src and isCurrent then
+        parts[#parts + 1] = ("ok, err = runSource(%s, 'embedded current script')"):format(("%q"):format(src))
+    end
+    -- Otherwise try the published version before accepting an older workspace copy.
+    if SCRIPT_URL ~= "" then
+        parts[#parts + 1] = ("if not ok then local fetched, result = pcall(function() return game:HttpGet(%q) end); if fetched then ok, err = runSource(result, 'URL') else err = 'HTTP download: ' .. tostring(result) end end"):format(SCRIPT_URL)
+    end
+    local quotedNames = {}
+    for _, n in ipairs(SCRIPT_FILE_NAMES) do
+        quotedNames[#quotedNames + 1] = ("%q"):format(n)
+    end
+    parts[#parts + 1] = ("if not ok and type(isfile) == 'function' and type(readfile) == 'function' then for _, n in ipairs({%s}) do local exists, has = pcall(isfile, n); if exists and has then local readOk, content = pcall(readfile, n); if readOk then ok, err = runSource(content, n); if ok then break end else err = tostring(content) end end end end"):format(table.concat(quotedNames, ","))
+    parts[#parts + 1] = 'if not ok then warn("[SatisHub] auto execute failed: " .. tostring(err)) end'
+    return table.concat(parts, "\n")
 end
 
 -- Shown in the About tab and in the startup notice so you can see if auto execute is actually possible
