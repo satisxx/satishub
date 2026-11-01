@@ -72,6 +72,8 @@ local state = {
 	unitIds = "",
 	transparent = false,
 	autoUpgrade = false,
+	autoScanUnits = false,
+	incognitoMode = false,
 	autoExecTeleport = true,
 	cardOption = "2",
 	savedKey = "",
@@ -177,7 +179,7 @@ end)
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01-delay5"
+local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01-delay5-autoscan"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -464,6 +466,30 @@ local function scanUnitIds(full)
 	scanning = false
 	return learned.count - before
 end
+
+-- Auto Scan Units: periodic lightweight inventory scans, without hooks or repeated full map scans.
+-- The setting survives teleports through the existing saveSettings/loadSettings logic.
+local AUTO_SCAN_INTERVAL = 20
+local autoScanNextAt = 0
+local function requestAutoScan()
+    autoScanNextAt = 0
+end
+
+task.spawn(function()
+    while alive() do
+        if state.autoScanUnits and os.clock() >= autoScanNextAt then
+            autoScanNextAt = os.clock() + AUTO_SCAN_INTERVAL
+            -- scanUnitIds already prevents simultaneous scans.
+            local ok, count = pcall(scanUnitIds, false)
+            if ok and count > 0 then
+                print(("[SatisHub] Auto Scan Units: found %d new ID(s)"):format(count))
+            elseif not ok then
+                warn("[SatisHub] Auto Scan Units failed: " .. tostring(count))
+            end
+        end
+        task.wait(1)
+    end
+end)
 
 -- Scan once after loading so the IDs are available even if auto place is turned on later.
 task.spawn(function()
@@ -1096,6 +1122,15 @@ userLabel.TextTruncate = Enum.TextTruncate.AtEnd
 userLabel.Font = Enum.Font.GothamBold
 userLabel.TextSize = 12
 userLabel.Parent = userBar
+
+-- Incognito hides account details from the SatisHub footer only.
+local function refreshIncognito()
+    avatar.Visible = not state.incognitoMode
+    userLabel.Text = state.incognitoMode and "User: Hidden" or ("User: " .. Players.LocalPlayer.Name)
+    userLabel.Position = state.incognitoMode and UDim2.new(0, 10, 0, 0) or UDim2.new(0, 42, 0, 0)
+    userLabel.Size = state.incognitoMode and UDim2.new(1, -20, 1, 0) or UDim2.new(1, -50, 1, 0)
+end
+refreshIncognito()
 
 task.spawn(function()
 	local ok, img = pcall(function()
@@ -2500,6 +2535,16 @@ makeToggle(settingsPage, "RGB Effects", 8, function(v)
     refreshRgb()
 end, state.rgbEnabled)
 
+makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
+    state.autoScanUnits = v
+    if v then requestAutoScan() end
+end, state.autoScanUnits)
+
+makeToggle(settingsPage, "Incognito Mode", 10, function(v)
+    state.incognitoMode = v
+    refreshIncognito()
+end, state.incognitoMode)
+
 -- ABOUT page
 local aboutPage = makePage(body, 6)
 aboutPage.Visible = false
@@ -3188,38 +3233,20 @@ local function pickSpot()
 	return nil
 end
 
+-- Cycle through the available IDs rather than randomly picking the same one.
+-- A rejected ID is cooled down briefly, while other IDs still get a turn.
+local nextUnitIndex = 0
+local idRetryAfter = {}
 local function pickId(ids)
-	local usable = {}
-	local manualUsable = {}
-	local confirmedUsable = {}
-	local likelyUsable = {}
-	for _, id in ipairs(ids) do
-		if (idFails[id] or 0) < 6 then
-			usable[#usable + 1] = id
-			if learned.manual[id] then
-				manualUsable[#manualUsable + 1] = id
-			elseif learned.confirmed[id] then
-				confirmedUsable[#confirmedUsable + 1] = id
-			elseif learned.likely[id] then
-				likelyUsable[#likelyUsable + 1] = id
-			end
-		end
-	end
-	if #usable == 0 then
-		idFails = {}
-		return ids[math.random(1, #ids)]
-	end
-	local pool = manualUsable
-	if #pool == 0 then
-		pool = confirmedUsable
-	end
-	if #pool == 0 then
-		pool = likelyUsable
-	end
-	if #pool == 0 then
-		pool = usable
-	end
-	return pool[math.random(1, #pool)]
+    if #ids == 0 then return nil end
+    for _ = 1, #ids do
+        nextUnitIndex = (nextUnitIndex % #ids) + 1
+        local id = ids[nextUnitIndex]
+        if (idRetryAfter[id] or 0) <= os.clock() then
+            return id
+        end
+    end
+    return nil
 end
 
 -- Places one unit and checks if it really appeared (your unit count goes up)
@@ -3273,6 +3300,7 @@ local function collectUnitIds()
     -- If no manual ID was set, only use IDs gathered from the player's own UI / inventory.
     for id in pairs(learned.likely) do add(id) end
     for id in pairs(learned.confirmed) do add(id) end
+    table.sort(list)
     return list
 end
 
@@ -3298,6 +3326,8 @@ task.spawn(function()
 			badSpots = {}
 			pendingBad = {}
 			idFails = {}
+            idRetryAfter = {}
+            nextUnitIndex = 0
 			failStreak = 0
 		end
 
@@ -3315,11 +3345,16 @@ task.spawn(function()
 					break
 				end
 				local id = pickId(ids)
+                if not id then
+                    placeNotice("All unit IDs temporarily on cooldown (money, cap, or invalid IDs)")
+                    break
+                end
                 local placed, reason = tryPlace(id, pos)
 				if placed then
 					failStreak = 0
                     placeLastError = "OK"
 					idFails[id] = 0
+                    idRetryAfter[id] = nil
 					placedCount = placedCount + 1
 					goodSpots[#goodSpots + 1] = pos
 					if #goodSpots > 30 then
@@ -3342,11 +3377,13 @@ task.spawn(function()
 					-- this spot did not work: move on to another one right away
 					failStreak = failStreak + 1
 					idFails[id] = (idFails[id] or 0) + 1
+                    -- Avoid retrying one failing unit endlessly. Do not permanently ban it.
+                    idRetryAfter[id] = os.clock() + math.min(30, 4 * idFails[id])
 					pendingBad[#pendingBad + 1] = { pos = pos, t = os.clock() }
 					if failStreak >= NO_MONEY_AFTER then
 						-- many fails in a row: probably no money / unit limit, not the spots
 						pendingBad = {}
-						idFails = {}
+                        placeNotice("Multiple failed placements: check money, unit cap, and available ground")
 						break
 					end
 				end
