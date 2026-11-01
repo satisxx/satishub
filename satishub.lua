@@ -114,7 +114,7 @@ end
 
 -- ===== Auto execute on teleport / server change =====
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
-local SCRIPT_URL = ""
+   local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
 -- The main name is "satishub.lua"; the other names are accepted too (some phones add .txt when saving).
 local SCRIPT_FILE = "satishub.lua"
