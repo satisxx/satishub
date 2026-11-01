@@ -3273,7 +3273,6 @@ task.spawn(function()
 			failStreak = 0
 		end
 
-linha 3254
 		wasOn = state.randomPlace
 
 		if state.randomPlace and #ids > 0 then
