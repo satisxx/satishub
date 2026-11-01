@@ -2675,8 +2675,7 @@ end)
 -- ===== Auto Leave on victory OR defeat =====
 -- Cobalt's firesignal example describes an incoming server notification;
 -- do not call firesignal here, as it doesn't initiate a lobby teleport.
--- The lobby vote value below is based on the game's existing finished-vote remote
--- and may need adjustment if the game's server expects a different option.
+-- Return-to-lobby RemoteFunction and its zero-argument call were captured with Cobalt.
 do
     local eventFolder = endpoints and endpoints:FindFirstChild("server_to_client")
     local finishedEvent = eventFolder and eventFolder:FindFirstChild("game_finished")
@@ -2689,11 +2688,13 @@ do
             leaveSent = true
             task.delay(2, function()
                 if not alive() or not state.autoLeave then return end
-                local ok, response = invokeRet("set_game_finished_vote", "lobby")
+                -- Verified from the Return to Lobby button (Cobalt capture).
+                -- This is a RemoteFunction and takes NO arguments.
+                local ok, response = invokeRet("teleport_back_to_lobby")
                 if ok then
-                    print("[SatisHub] Auto Leave: lobby vote sent after game_finished.")
+                    print("[SatisHub] Auto Leave: Return to Lobby requested.")
                     if response == false then
-                        warn("[SatisHub] Auto Leave: the server rejected the lobby vote; check the game's expected vote value.")
+                        warn("[SatisHub] Auto Leave: server refused the lobby request.")
                     end
                 else
                     warn("[SatisHub] Auto Leave failed: " .. tostring(response))
