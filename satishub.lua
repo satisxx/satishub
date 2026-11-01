@@ -176,7 +176,7 @@ end)
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01-fix2"
+local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01-delay5"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -226,47 +226,39 @@ end
 -- Code that runs in the next server: waits for the game, then loads the script.
 -- Order: embedded copy -> file read again in the new server -> URL.
 local function buildQueuedCode()
+    -- Runs in the NEW game, not in the old server.
+    -- Never use a saved embedded copy: always prefer the latest GitHub script.
     local parts = {
         "repeat task.wait() until game:IsLoaded()",
-        "task.wait(2)",
-        "pcall(function() local e = (type(getgenv) == 'function' and getgenv()) or _G; e.SatisHubFromQueue = true end)",
+        "task.wait(5)",
+        "local env = (type(getgenv) == 'function' and getgenv()) or _G",
+        "env.SatisHubFromQueue = true",
         [[local function runSource(source, label)
             if type(source) ~= "string" or source == "" then
-                return false, label .. ": empty or invalid source"
+                return false, label .. ": empty response"
             end
             if type(loadstring) ~= "function" then
-                return false, "executor does not support loadstring"
+                return false, "loadstring unavailable in executor"
             end
             local chunk, compileError = loadstring(source)
             if type(chunk) ~= "function" then
-                return false, label .. " compilation: " .. tostring(compileError)
+                return false, label .. " compile: " .. tostring(compileError)
             end
-            local ok, err = xpcall(chunk, function(e)
-                if debug and type(debug.traceback) == "function" then
-                    return debug.traceback(tostring(e), 2)
-                end
-                return tostring(e)
-            end)
+            local ok, err = pcall(chunk)
             if not ok then return false, label .. " runtime: " .. tostring(err) end
             return true
         end]],
-        "local ok, err = false, 'no valid script source found'",
+        "local ok, err = false, 'no script source available'",
     }
-    -- Prefer the current version stored in the executor workspace.
-    local src, _, isCurrent = readOwnFile()
-    if src and isCurrent then
-        parts[#parts + 1] = ("ok, err = runSource(%s, 'embedded current script')"):format(("%q"):format(src))
-    end
-    -- Otherwise try the published version before accepting an older workspace copy.
     if SCRIPT_URL ~= "" then
-        parts[#parts + 1] = ("if not ok then local fetched, result = pcall(function() return game:HttpGet(%q) end); if fetched then ok, err = runSource(result, 'URL') else err = 'HTTP download: ' .. tostring(result) end end"):format(SCRIPT_URL)
+        parts[#parts + 1] = ("local fetched, result = pcall(function() return game:HttpGet(%q) end); if fetched then ok, err = runSource(result, 'GitHub') else err = 'download: ' .. tostring(result) end"):format(SCRIPT_URL)
     end
     local quotedNames = {}
     for _, n in ipairs(SCRIPT_FILE_NAMES) do
         quotedNames[#quotedNames + 1] = ("%q"):format(n)
     end
-    parts[#parts + 1] = ("if not ok and type(isfile) == 'function' and type(readfile) == 'function' then for _, n in ipairs({%s}) do local exists, has = pcall(isfile, n); if exists and has then local readOk, content = pcall(readfile, n); if readOk then ok, err = runSource(content, n); if ok then break end else err = tostring(content) end end end end"):format(table.concat(quotedNames, ","))
-    parts[#parts + 1] = 'if not ok then warn("[SatisHub] auto execute failed: " .. tostring(err)) end'
+    parts[#parts + 1] = ("if not ok and type(isfile) == 'function' and type(readfile) == 'function' then for _, n in ipairs({%s}) do local exists, has = pcall(isfile, n); if exists and has then local readOk, content = pcall(readfile, n); if readOk then ok, err = runSource(content, n); if ok then break end end end end end"):format(table.concat(quotedNames, ","))
+    parts[#parts + 1] = 'if not ok then env.SatisHubFromQueue = nil; warn("[SatisHub] auto execute failed: " .. tostring(err)) end'
     return table.concat(parts, "\n")
 end
 
@@ -361,8 +353,9 @@ local function collectUuids(value, depth, seen, likely)
 end
 
 local HOOK_VERSION = 2
+local DIAGNOSTIC_DISABLE_HOOK = true
 local installedHookVersion = tonumber(env.SatisHubHookVersion) or 0
-if installedHookVersion < HOOK_VERSION and hookmetamethod and getnamecallmethod then
+if not DIAGNOSTIC_DISABLE_HOOK and installedHookVersion < HOOK_VERSION and hookmetamethod and getnamecallmethod then
 	local okHook = pcall(function()
 		local old
 		old = hookmetamethod(game, "__namecall", (newcclosure or function(f) return f end)(function(self, ...)
@@ -483,26 +476,22 @@ end)
 local clearQueueFn = clear_queue_on_teleport or clearqueueonteleport or (syn and syn.clear_queue_on_teleport)
 
 local function queueSelf()
-	if state.autoExecTeleport and queueFn then
-		pcall(queueFn, buildQueuedCode())
-	end
+    if state.autoExecTeleport and type(queueFn) == "function" then
+        local ok, err = pcall(queueFn, buildQueuedCode())
+        if not ok then warn("[SatisHub] Could not queue teleport script: " .. tostring(err)) end
+    end
 end
 
--- Called by the "Auto Execute On Teleport" toggle (Settings tab)
 local function setAutoExecTeleport(v)
-	if v then
-		queueSelf()
-	elseif clearQueueFn then
-		pcall(clearQueueFn)
-	end
+    if v then
+        queueSelf()
+    elseif type(clearQueueFn) == "function" then
+        pcall(clearQueueFn)
+    end
 end
 
--- Queue now AND again right when a teleport starts (the matchmaking teleport),
--- so it works even if the first queue was lost.
+-- Register once now. Do not queue repeatedly during the teleport itself.
 queueSelf()
-pcall(function()
-	Players.LocalPlayer.OnTeleport:Connect(queueSelf)
-end)
 
 -- ===== Look =====
 -- Black background (changeable in Settings), grey controls, RGB borders. Green only means "ON".
@@ -3322,13 +3311,27 @@ task.spawn(function()
 	end
 end)
 
--- Auto join event (matchmaking)
+-- Auto join event: only one matchmaking request per activation.
+-- Repeated requests every five seconds can overlap with a server teleport.
+local autoJoinRequested = false
+local autoJoinBusy = false
+
 task.spawn(function()
 	while alive() do
-		if state.autoJoinEvent then
-			invoke("request_matchmaking", "summer2_event")
+		if not state.autoJoinEvent then
+			autoJoinRequested = false
+		elseif not autoJoinRequested and not autoJoinBusy then
+			autoJoinRequested = true
+			autoJoinBusy = true
+			local ok, result = invokeRet("request_matchmaking", "summer2_event")
+			autoJoinBusy = false
+			if not ok then
+				warn("[SatisHub] Auto Join: pedido falhou ou remote indisponivel: " .. tostring(result))
+			else
+				print("[SatisHub] Auto Join: pedido enviado; a aguardar pelo jogo.")
+			end
 		end
-		task.wait(JOIN_INTERVALO)
+		task.wait(1)
 	end
 end)
 
