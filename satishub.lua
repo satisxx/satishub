@@ -13,6 +13,7 @@ local TweenService = game:GetService("TweenService")
 local RUN_ID = tostring(os.clock()) .. tostring(math.random(1, 1e9))
 local env = (getgenv and getgenv()) or _G
 env.SatisHubRunId = RUN_ID
+env.SatisHubAutoPlacing = nil
 local function alive()
 	return env.SatisHubRunId == RUN_ID
 end
@@ -44,6 +45,11 @@ local function invokeRet(name, ...)
 	end)
 end
 
+-- Packs all return values (including nils) so the __namecall hook can preserve them.
+local function pack(...)
+	return { n = select("#", ...), ... }
+end
+
 local INTERVALO = 1.5
 local JOIN_INTERVALO = 5
 
@@ -70,6 +76,7 @@ local state = {
 	cardOption = "2",
 	savedKey = "",
 	themeColor = "",
+	hideMessages = true,
 }
 
 -- ===== Settings saved to file (survive teleports) =====
@@ -81,7 +88,8 @@ local function saveSettings()
 		for k, v in pairs(state) do
 			copy[k] = v
 		end
-		copy.autoJoinEvent = false -- never saved: Auto Join Event always starts OFF
+		-- Auto Join Event is now saved like every other option: once you turn it ON,
+		-- it stays ON after a teleport / new server.
 		writefile(SAVE_FILE, HttpService:JSONEncode(copy))
 	end)
 end
@@ -97,7 +105,7 @@ local function loadSettings()
 			end
 		end
 	end)
-	state.autoJoinEvent = false -- always OFF on execute, even if an old save file had it ON
+	-- The saved value is kept. If it was ON before, it comes back ON.
 end
 
 loadSettings()
@@ -112,7 +120,63 @@ if fromQueue then
 	end
 end
 
+-- ===== Hide game messages =====
+-- The game shows things like "Not enough money!" through the show_message remote.
+-- Disabling the client-side connections stops those popups without touching the game logic.
+local messageEvent
+do
+	local s2c = endpoints and endpoints:FindFirstChild("server_to_client")
+	messageEvent = s2c and s2c:FindFirstChild("show_message")
+end
+
+local messageConnections = {}
+local messageConnSet = {}
+
+local function refreshMessageConnections()
+	-- The remote can appear a moment after the script starts, so look it up again
+	-- if it was not found yet (or if the game recreated it).
+	if not messageEvent or not messageEvent.Parent then
+		local eps = (endpoints and endpoints.Parent) and endpoints or ReplicatedStorage:FindFirstChild("endpoints")
+		local s2c = eps and eps:FindFirstChild("server_to_client")
+		messageEvent = s2c and s2c:FindFirstChild("show_message")
+	end
+	if not messageEvent or not getconnections then
+		return
+	end
+	local ok, conns = pcall(getconnections, messageEvent.OnClientEvent)
+	if not ok or type(conns) ~= "table" then
+		return
+	end
+	for _, conn in ipairs(conns) do
+		if not messageConnSet[conn] then
+			messageConnSet[conn] = true
+			messageConnections[#messageConnections + 1] = conn
+		end
+		pcall(function()
+			if state.hideMessages then
+				conn:Disable()
+			else
+				conn:Enable()
+			end
+		end)
+	end
+end
+
+refreshMessageConnections()
+
+task.spawn(function()
+	while alive() do
+		task.wait(1)
+		if not alive() then
+			break
+		end
+		refreshMessageConnections()
+	end
+end)
+
 -- ===== Auto execute on teleport / server change =====
+-- Unique marker used to detect whether the saved satishub.lua is this updated version.
+local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -135,6 +199,7 @@ local function readOwnFile()
 	if not (isfile and readfile) then
 		return nil
 	end
+	local firstOld
 	for _, name in ipairs(SCRIPT_FILE_NAMES) do
 		local okR, content = pcall(function()
 			if isfile(name) then
@@ -142,8 +207,14 @@ local function readOwnFile()
 			end
 		end)
 		if okR and type(content) == "string" and #content > 0 then
-			return content, name
+			if content:find(SCRIPT_BUILD, 1, true) then
+				return content, name, true
+			end
+			firstOld = firstOld or { content, name }
 		end
+	end
+	if firstOld then
+		return firstOld[1], firstOld[2], false
 	end
 	return nil
 end
@@ -186,8 +257,12 @@ if not queueFn then
 elseif SCRIPT_URL == "" and not readOwnFile() then
 	autoExecStatus = "Auto execute: NOT ready. Save the script as '" .. SCRIPT_FILE .. "' in the workspace folder (or fill SCRIPT_URL)."
 else
-	local _, foundName = readOwnFile()
-	autoExecStatus = "Auto execute: ready" .. (foundName and (" (" .. foundName .. ")") or " (URL)")
+	local src, foundName, isCurrent = readOwnFile()
+	if src and not isCurrent then
+		autoExecStatus = "Auto execute: saved file is OLD. Replace '" .. SCRIPT_FILE .. "' with this updated script."
+	else
+		autoExecStatus = "Auto execute: ready" .. (foundName and (" (" .. foundName .. ")") or " (URL)")
+	end
 end
 local execName = "unknown"
 pcall(function()
@@ -201,47 +276,35 @@ print("[SatisHub] " .. autoExecStatus)
 -- ===== Unit placement learning =====
 -- The unit IDs and positions change per account/map, so the script learns them:
 -- every time YOU place a unit manually, the ID and position used by the game are recorded.
+-- It also scans the inventory / unit folders, so auto place can work before the first manual unit.
 local learned = env.SatisHubLearned
 if not learned then
-	learned = { ids = {}, count = 0, positions = {} }
+	learned = { ids = {}, confirmed = {}, likely = {}, manual = {}, count = 0, positions = {} }
 	env.SatisHubLearned = learned
 end
-
-if not env.SatisHubHooked and hookmetamethod and getnamecallmethod then
-	local okHook = pcall(function()
-		local old
-		old = hookmetamethod(game, "__namecall", (newcclosure or function(f) return f end)(function(self, ...)
-			local method = getnamecallmethod()
-			if method == "InvokeServer" and typeof(self) == "Instance" and self.Name == "spawn_unit" and not (checkcaller and checkcaller()) then
-				local args = { ... }
-				local id, cf = args[1], args[2]
-				if type(id) == "string" and not learned.ids[id] then
-					learned.ids[id] = true
-					learned.count = learned.count + 1
-				end
-				if typeof(cf) == "CFrame" then
-					local list = learned.positions
-					list[#list + 1] = cf.Position
-					if #list > 30 then
-						table.remove(list, 1)
-					end
-				end
-			end
-			return old(self, ...)
-		end))
-	end)
-	if okHook then
-		env.SatisHubHooked = true
-	end
-end
+learned.ids = learned.ids or {}
+learned.confirmed = learned.confirmed or {}
+learned.likely = learned.likely or {}
+learned.manual = learned.manual or {}
+learned.positions = learned.positions or {}
+learned.count = learned.count or 0
 
 -- Scans YOUR player and GUI for unit IDs (format {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}):
 -- instance names, StringValues and attributes. Finds all your units, not only the one you placed.
 local UUID_PATTERN = "^{%x+%-%x+%-%x+%-%x+%-%x+}$"
 local lastScan = 0
 
-local function addUnitId(id)
-	if type(id) == "string" and id:match(UUID_PATTERN) and not learned.ids[id] then
+local function addUnitId(id, confirmed, likely)
+	if type(id) ~= "string" or not id:match(UUID_PATTERN) then
+		return false
+	end
+	if confirmed then
+		learned.confirmed[id] = true
+	end
+	if likely then
+		learned.likely[id] = true
+	end
+	if not learned.ids[id] then
 		learned.ids[id] = true
 		learned.count = learned.count + 1
 		return true
@@ -249,25 +312,153 @@ local function addUnitId(id)
 	return false
 end
 
-local function scanUnitIds()
-	lastScan = os.clock()
-	local before = learned.count
+-- Finds UUID strings inside tables/strings returned by the game's remotes.
+local function collectUuids(value, depth, seen, likely)
+	depth = depth or 0
+	if depth > 5 then
+		return
+	end
+	local t = type(value)
+	if t == "string" then
+		addUnitId(value, false, likely)
+	elseif t == "table" then
+		seen = seen or {}
+		if seen[value] then
+			return
+		end
+		seen[value] = true
+		for k, v in pairs(value) do
+			if type(k) == "string" then
+				addUnitId(k, false, likely)
+			end
+			if type(v) == "string" then
+				addUnitId(v, false, likely)
+			elseif type(v) == "table" then
+				collectUuids(v, depth + 1, seen, likely)
+			end
+		end
+	end
+end
+
+local HOOK_VERSION = 2
+local installedHookVersion = tonumber(env.SatisHubHookVersion) or 0
+if installedHookVersion < HOOK_VERSION and hookmetamethod and getnamecallmethod then
+	local okHook = pcall(function()
+		local old
+		old = hookmetamethod(game, "__namecall", (newcclosure or function(f) return f end)(function(self, ...)
+			local method = getnamecallmethod()
+			if method == "InvokeServer" and typeof(self) == "Instance" and not (checkcaller and checkcaller()) then
+				local args = { ... }
+				local remoteName = self.Name
+				if remoteName == "spawn_unit" and not env.SatisHubAutoPlacing then
+					local id, cf = args[1], args[2]
+					if type(id) == "string" then
+						addUnitId(id, true, true)
+					end
+					if typeof(cf) == "CFrame" then
+						local list = learned.positions
+						list[#list + 1] = cf.Position
+						if #list > 30 then
+							table.remove(list, 1)
+						end
+					end
+				end
+				local results = pack(old(self, ...))
+				-- Inventory / shop responses often contain the unit UUIDs. Capturing them
+				-- here means auto place works even before you manually place the first unit.
+				local n = remoteName:lower()
+				if n:find("unit") or n:find("spawn") or n:find("inventory") or n:find("shop") or n:find("roster") or n:find("owned") or n:find("data") or n:find("save") or n:find("load") or n:find("profile") or n:find("team") or n:find("deck") then
+					pcall(function()
+						local seen = {}
+						for i = 1, results.n do
+							collectUuids(results[i], 0, seen, true)
+						end
+					end)
+				end
+				return table.unpack(results, 1, results.n)
+			end
+			return old(self, ...)
+		end))
+	end)
+	if okHook then
+		env.SatisHubHooked = true
+		env.SatisHubHookVersion = HOOK_VERSION
+	end
+end
+
+-- Scans a whole instance tree for UUIDs (names, StringValues and attributes).
+local function scanInstanceTree(root, likely)
+	if not root then
+		return
+	end
 	local n = 0
-	for _, inst in ipairs(Players.LocalPlayer:GetDescendants()) do
+	for _, inst in ipairs(root:GetDescendants()) do
 		n = n + 1
 		if n % 400 == 0 then
 			task.wait()
+			if not alive() then
+				return
+			end
 		end
-		addUnitId(inst.Name)
+		addUnitId(inst.Name, false, likely)
 		if inst:IsA("StringValue") then
-			addUnitId(inst.Value)
+			addUnitId(inst.Value, false, likely)
+		end
+		if inst:IsA("LuaSourceContainer") then
+			-- In some games the unit IDs are written in a ModuleScript table.
+			-- Source access is blocked in live games, so this is best-effort.
+			local okSrc, source = pcall(function()
+				return inst.Source
+			end)
+			if okSrc and type(source) == "string" and #source > 0 then
+				for id in source:gmatch("{%x+%-%x+%-%x+%-%x+%-%x+}") do
+					addUnitId(id, false, likely)
+				end
+			end
 		end
 		for _, v in pairs(inst:GetAttributes()) do
-			addUnitId(v)
+			addUnitId(v, false, likely)
 		end
 	end
+end
+
+local scanning = false
+local function scanUnitIds(full)
+	if scanning then
+		return 0
+	end
+	scanning = true
+	lastScan = os.clock()
+	local before = learned.count
+	pcall(function()
+		scanInstanceTree(Players.LocalPlayer, true)
+		if full ~= false then
+			scanInstanceTree(ReplicatedStorage, false)
+		end
+		local unitsFolder = workspace:FindFirstChild("_UNITS")
+		if unitsFolder then
+			scanInstanceTree(unitsFolder, false)
+		end
+		-- Scan likely unit / placement folders in the workspace, but not the whole map.
+		for _, inst in ipairs(workspace:GetChildren()) do
+			local name = inst.Name:lower()
+			if name:find("unit") or name:find("place") or name:find("tower") or name:find("base") or name:find("plot") then
+				scanInstanceTree(inst, false)
+			end
+		end
+	end)
+	scanning = false
 	return learned.count - before
 end
+
+-- Scan once after loading so the IDs are available even if auto place is turned on later.
+task.spawn(function()
+	task.wait(1)
+	if not alive() then
+		return
+	end
+	scanUnitIds(true)
+end)
 
 local clearQueueFn = clear_queue_on_teleport or clearqueueonteleport or (syn and syn.clear_queue_on_teleport)
 
@@ -363,6 +554,15 @@ local function loadIcon()
 	end
 	return nil
 end
+
+-- Stop a mini-game left running by a previous execution of the script.
+if env.SatisHubGameCleanup then
+	pcall(env.SatisHubGameCleanup)
+	env.SatisHubGameCleanup = nil
+end
+pcall(function()
+	game:GetService("ContextActionService"):UnbindAction("SatisHubMiniGame")
+end)
 
 -- Remove old instances if the script is executed again
 local parent = (gethui and gethui()) or Players.LocalPlayer:WaitForChild("PlayerGui")
@@ -537,6 +737,8 @@ local plainButtons = {} -- buttons that follow the theme (always solid)
 local toggleRefreshers = {} -- repaint functions of the toggles
 local header
 local userBar
+local gameWindow
+local gameHeader
 local refreshTabs
 
 local function btnColor()
@@ -551,6 +753,12 @@ local function applyTheme(c)
 	end
 	if userBar then
 		userBar.BackgroundColor3 = c:Lerp(Color3.new(0, 0, 0), 0.3)
+	end
+	if gameWindow then
+		gameWindow.BackgroundColor3 = c
+	end
+	if gameHeader then
+		gameHeader.BackgroundColor3 = c:Lerp(Color3.new(0, 0, 0), 0.3)
 	end
 	for _, o in ipairs(fields) do
 		o.BackgroundColor3 = c:Lerp(WHITE, 0.12)
@@ -1064,14 +1272,14 @@ caixaUnits.FocusLost:Connect(function()
 	saveSettings()
 end)
 
-local placeStatus = makeLabel(mainPage, "Place one unit manually so the script learns it", 12)
+local placeStatus = makeLabel(mainPage, "Auto Place: scanning unit IDs...", 12)
 placeStatus.TextSize = 11
 
 local scanBtn = makeButton(mainPage, "Scan Units", 13)
 scanBtn.MouseButton1Click:Connect(function()
 	scanBtn.Text = "Scanning..."
 	task.spawn(function()
-		local found = scanUnitIds()
+		local found = scanUnitIds(true)
 		scanBtn.Text = ("Found %d new unit ID(s)"):format(found)
 		task.wait(1.5)
 		scanBtn.Text = "Scan Units"
@@ -1082,7 +1290,7 @@ makeToggle(mainPage, "Auto Upgrade Units", 14, function(v)
 	state.autoUpgrade = v
 end, state.autoUpgrade)
 
--- PLAYER page (ESP + Noclip)
+-- PLAYER page (ESP + Noclip + mini games)
 local setEsp, setNoclip
 
 do
@@ -1245,6 +1453,933 @@ makeToggle(playerPage, "Noclip", 2, function(v)
 	setNoclip(v)
 end)
 
+-- ===== MINI GAMES (Player tab) =====
+-- Small Lua games that run inside the hub GUI. They do not touch the game itself.
+local gameTitle, gameContent, gameBackBtn, gameCloseBtn
+local stopCurrentGame
+local gameSession = 0
+
+gameWindow = Instance.new("Frame")
+gameWindow.Name = "SatisHubGames"
+gameWindow.Size = UDim2.fromOffset(360, 430)
+gameWindow.Position = UDim2.new(0.5, -180, 0.5, -215)
+gameWindow.BackgroundColor3 = currentTheme
+gameWindow.BorderSizePixel = 0
+gameWindow.Visible = false
+gameWindow.ZIndex = 30
+gameWindow.Parent = gui
+corner(gameWindow, 14)
+addRgbStroke(gameWindow, 3)
+
+gameHeader = Instance.new("Frame")
+gameHeader.Size = UDim2.new(1, 0, 0, 36)
+gameHeader.BackgroundColor3 = currentTheme:Lerp(Color3.new(0, 0, 0), 0.3)
+gameHeader.BorderSizePixel = 0
+gameHeader.ZIndex = 31
+gameHeader.Parent = gameWindow
+
+gameTitle = Instance.new("TextLabel")
+gameTitle.Size = UDim2.new(1, -100, 1, 0)
+gameTitle.Position = UDim2.fromOffset(12, 0)
+gameTitle.BackgroundTransparency = 1
+gameTitle.Text = "Mini Games"
+gameTitle.TextColor3 = WHITE
+gameTitle.TextXAlignment = Enum.TextXAlignment.Left
+gameTitle.Font = Enum.Font.GothamBold
+gameTitle.TextSize = 16
+gameTitle.ZIndex = 32
+gameTitle.Parent = gameHeader
+
+gameBackBtn = Instance.new("TextButton")
+gameBackBtn.Size = UDim2.fromOffset(28, 26)
+gameBackBtn.Position = UDim2.new(1, -68, 0, 5)
+gameBackBtn.BackgroundColor3 = btnColor()
+gameBackBtn.Text = "←"
+gameBackBtn.TextColor3 = WHITE
+gameBackBtn.Font = Enum.Font.GothamBold
+gameBackBtn.TextSize = 16
+gameBackBtn.BorderSizePixel = 0
+gameBackBtn.AutoButtonColor = false
+gameBackBtn.Visible = false
+gameBackBtn.ZIndex = 32
+gameBackBtn.Parent = gameHeader
+corner(gameBackBtn, 6)
+plainButtons[#plainButtons + 1] = gameBackBtn
+
+gameCloseBtn = Instance.new("TextButton")
+gameCloseBtn.Size = UDim2.fromOffset(28, 26)
+gameCloseBtn.Position = UDim2.new(1, -34, 0, 5)
+gameCloseBtn.BackgroundColor3 = btnColor()
+gameCloseBtn.Text = "X"
+gameCloseBtn.TextColor3 = WHITE
+gameCloseBtn.Font = Enum.Font.GothamBold
+gameCloseBtn.TextSize = 14
+gameCloseBtn.BorderSizePixel = 0
+gameCloseBtn.AutoButtonColor = false
+gameCloseBtn.ZIndex = 32
+gameCloseBtn.Parent = gameHeader
+corner(gameCloseBtn, 6)
+plainButtons[#plainButtons + 1] = gameCloseBtn
+
+for _, b in ipairs({ gameBackBtn, gameCloseBtn }) do
+	local st = Instance.new("UIStroke")
+	st.Color = OFF_STROKE
+	st.Thickness = 1.5
+	st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	st.Parent = b
+end
+
+gameContent = Instance.new("Frame")
+gameContent.Name = "Content"
+gameContent.Position = UDim2.fromOffset(0, 36)
+gameContent.Size = UDim2.new(1, 0, 1, -36)
+gameContent.BackgroundTransparency = 1
+gameContent.ClipsDescendants = true
+gameContent.ZIndex = 31
+gameContent.Parent = gameWindow
+
+makeDraggable(gameHeader, gameWindow)
+
+local function clearGameContent()
+	if stopCurrentGame then
+		local fn = stopCurrentGame
+		stopCurrentGame = nil
+		if env.SatisHubGameCleanup == fn then
+			env.SatisHubGameCleanup = nil
+		end
+		pcall(fn)
+	end
+	for _, child in ipairs(gameContent:GetChildren()) do
+		child:Destroy()
+	end
+end
+
+local function setGameCleanup(fn)
+	stopCurrentGame = fn
+	env.SatisHubGameCleanup = fn
+end
+
+local function gameLabel(parentObj, text, size, position, textSize, color, bold)
+	local l = Instance.new("TextLabel")
+	l.Size = size
+	l.Position = position
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.TextColor3 = color or WHITE
+	l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	l.TextSize = textSize or 13
+	l.TextWrapped = true
+	l.ZIndex = 32
+	l.Parent = parentObj
+	return l
+end
+
+local function gameButton(parentObj, text, size, position, color)
+	local b = Instance.new("TextButton")
+	b.Size = size
+	b.Position = position
+	b.BackgroundColor3 = color or Color3.fromRGB(45, 48, 60)
+	b.Text = text
+	b.TextColor3 = WHITE
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 13
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = false
+	b.ZIndex = 32
+	b.Parent = parentObj
+	corner(b, 8)
+	local st = Instance.new("UIStroke")
+	st.Color = OFF_STROKE
+	st.Thickness = 1.5
+	st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	st.Parent = b
+	return b
+end
+
+local function showGameOver(parentObj, titleText, subtitleText, onRestart)
+	local overlay = Instance.new("Frame")
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+	overlay.BackgroundTransparency = 0.35
+	overlay.BorderSizePixel = 0
+	overlay.ZIndex = 40
+	overlay.Parent = parentObj
+	corner(overlay, 8)
+
+	local t = gameLabel(overlay, titleText, UDim2.new(1, -20, 0, 30), UDim2.new(0, 10, 0.5, -55), 22, WHITE, true)
+	t.ZIndex = 41
+	t.TextXAlignment = Enum.TextXAlignment.Center
+
+	local s = gameLabel(overlay, subtitleText, UDim2.new(1, -20, 0, 24), UDim2.new(0, 10, 0.5, -20), 14, Color3.fromRGB(220, 220, 220), false)
+	s.ZIndex = 41
+	s.TextXAlignment = Enum.TextXAlignment.Center
+
+	local b = gameButton(overlay, "Play Again", UDim2.fromOffset(130, 34), UDim2.new(0.5, -65, 0.5, 15))
+	b.ZIndex = 41
+	b.MouseButton1Click:Connect(onRestart)
+	return overlay
+end
+
+local gameActionName = "SatisHubMiniGame"
+
+local function bindGameKeys(keys)
+	local cas = game:GetService("ContextActionService")
+	pcall(function()
+		cas:BindActionAtPriority(gameActionName, function()
+			return Enum.ContextActionResult.Sink
+		end, false, 3000, table.unpack(keys))
+	end)
+end
+
+local function unbindGameKeys()
+	local cas = game:GetService("ContextActionService")
+	pcall(function()
+		cas:UnbindAction(gameActionName)
+	end)
+end
+
+local function keyDown(...)
+	for _, key in ipairs({ ... }) do
+		if UserInputService:IsKeyDown(key) then
+			return true
+		end
+	end
+	return false
+end
+
+-- ===== Snake =====
+local function startSnake()
+	clearGameContent()
+	gameTitle.Text = "Snake"
+	gameBackBtn.Visible = true
+	local session = gameSession + 1
+	gameSession = session
+
+	local running = true
+	local gridSize = 15
+	local cellSize = 20
+
+	local scoreLabel = gameLabel(gameContent, "Score: 0", UDim2.new(1, -20, 0, 24), UDim2.new(0, 10, 0, 8), 14, WHITE, true)
+	scoreLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+	local grid = Instance.new("Frame")
+	grid.Size = UDim2.fromOffset(gridSize * cellSize, gridSize * cellSize)
+	grid.Position = UDim2.new(0.5, -(gridSize * cellSize) / 2, 0, 40)
+	grid.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
+	grid.BorderSizePixel = 0
+	grid.ClipsDescendants = true
+	grid.ZIndex = 32
+	grid.Parent = gameContent
+	corner(grid, 8)
+
+	local cells = {}
+	for y = 1, gridSize do
+		cells[y] = {}
+		for x = 1, gridSize do
+			local c = Instance.new("Frame")
+			c.Size = UDim2.fromOffset(cellSize - 1, cellSize - 1)
+			c.Position = UDim2.fromOffset((x - 1) * cellSize, (y - 1) * cellSize)
+			c.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+			c.BorderSizePixel = 0
+			c.ZIndex = 33
+			c.Parent = grid
+			cells[y][x] = c
+		end
+	end
+
+	local snake = { { x = 8, y = 8 }, { x = 7, y = 8 }, { x = 6, y = 8 } }
+	local dir = { x = 1, y = 0 }
+	local nextDir = { x = 1, y = 0 }
+	local food = { x = 12, y = 8 }
+	local score = 0
+
+	local function render()
+		for y = 1, gridSize do
+			for x = 1, gridSize do
+				cells[y][x].BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+			end
+		end
+		cells[food.y][food.x].BackgroundColor3 = Color3.fromRGB(255, 90, 90)
+		for i, p in ipairs(snake) do
+			if p.x >= 1 and p.x <= gridSize and p.y >= 1 and p.y <= gridSize then
+				cells[p.y][p.x].BackgroundColor3 = (i == 1) and Color3.fromRGB(90, 255, 140) or Color3.fromRGB(40, 200, 100)
+			end
+		end
+	end
+
+	local function placeFood()
+		local free = {}
+		local occupied = {}
+		for _, p in ipairs(snake) do
+			occupied[p.y * 100 + p.x] = true
+		end
+		for y = 1, gridSize do
+			for x = 1, gridSize do
+				if not occupied[y * 100 + x] then
+					free[#free + 1] = { x = x, y = y }
+				end
+			end
+		end
+		if #free > 0 then
+			food = free[math.random(1, #free)]
+		end
+	end
+
+	local function gameOver()
+		running = false
+		showGameOver(grid, "Game Over", "Score: " .. score, function()
+			if gameSession == session then
+				startSnake()
+			end
+		end)
+	end
+
+	local function step()
+		if not running then
+			return
+		end
+		dir = nextDir
+		local head = { x = snake[1].x + dir.x, y = snake[1].y + dir.y }
+		if head.x < 1 or head.x > gridSize or head.y < 1 or head.y > gridSize then
+			gameOver()
+			return
+		end
+		local eating = (head.x == food.x and head.y == food.y)
+		local limit = eating and #snake or (#snake - 1)
+		for i = 1, limit do
+			if snake[i].x == head.x and snake[i].y == head.y then
+				gameOver()
+				return
+			end
+		end
+		table.insert(snake, 1, head)
+		if eating then
+			score = score + 1
+			scoreLabel.Text = "Score: " .. score
+			placeFood()
+		else
+			table.remove(snake)
+		end
+		render()
+	end
+
+	render()
+
+	local inputConn = UserInputService.InputBegan:Connect(function(input)
+		local focused = UserInputService:GetFocusedTextBox()
+		if focused and focused.Parent and focused.Parent.Visible then
+			return
+		end
+		local key = input.KeyCode
+		local newDir
+		if key == Enum.KeyCode.W or key == Enum.KeyCode.Up then
+			newDir = { x = 0, y = -1 }
+		elseif key == Enum.KeyCode.S or key == Enum.KeyCode.Down then
+			newDir = { x = 0, y = 1 }
+		elseif key == Enum.KeyCode.A or key == Enum.KeyCode.Left then
+			newDir = { x = -1, y = 0 }
+		elseif key == Enum.KeyCode.D or key == Enum.KeyCode.Right then
+			newDir = { x = 1, y = 0 }
+		end
+		if newDir and not (newDir.x == -dir.x and newDir.y == -dir.y) then
+			nextDir = newDir
+		end
+	end)
+
+	-- On-screen arrows (mobile)
+	local pad = Instance.new("Frame")
+	pad.Size = UDim2.fromOffset(180, 32)
+	pad.Position = UDim2.new(0.5, -90, 1, -42)
+	pad.BackgroundTransparency = 1
+	pad.ZIndex = 32
+	pad.Parent = gameContent
+	local padLayout = Instance.new("UIListLayout")
+	padLayout.FillDirection = Enum.FillDirection.Horizontal
+	padLayout.Padding = UDim.new(0, 6)
+	padLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	padLayout.Parent = pad
+	local arrows = {
+		{ "←", -1, 0 },
+		{ "↑", 0, -1 },
+		{ "↓", 0, 1 },
+		{ "→", 1, 0 },
+	}
+	for i, a in ipairs(arrows) do
+		local b = gameButton(pad, a[1], UDim2.fromOffset(40, 32), UDim2.fromOffset(0, 0))
+		b.TextSize = 18
+		b.LayoutOrder = i
+		b.MouseButton1Click:Connect(function()
+			local newDir = { x = a[2], y = a[3] }
+			if not (newDir.x == -dir.x and newDir.y == -dir.y) then
+				nextDir = newDir
+			end
+		end)
+	end
+
+	bindGameKeys({ Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right })
+
+	task.spawn(function()
+		while running and gameSession == session do
+			task.wait(0.16)
+			step()
+		end
+	end)
+
+	setGameCleanup(function()
+		running = false
+		inputConn:Disconnect()
+		unbindGameKeys()
+	end)
+end
+
+-- ===== Pong =====
+local function startPong()
+	clearGameContent()
+	gameTitle.Text = "Pong"
+	gameBackBtn.Visible = true
+	local session = gameSession + 1
+	gameSession = session
+
+	local running = true
+	local W, H = 320, 220
+
+	local scoreLabel = gameLabel(gameContent, "You 0  x  0 CPU", UDim2.new(1, -20, 0, 24), UDim2.new(0, 10, 0, 8), 14, WHITE, true)
+	scoreLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+	local canvas = Instance.new("Frame")
+	canvas.Size = UDim2.fromOffset(W, H)
+	canvas.Position = UDim2.new(0.5, -W / 2, 0, 42)
+	canvas.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
+	canvas.BorderSizePixel = 0
+	canvas.ClipsDescendants = true
+	canvas.ZIndex = 32
+	canvas.Parent = gameContent
+	corner(canvas, 8)
+
+	local paddleW, paddleH = 8, 48
+	local playerPaddle = Instance.new("Frame")
+	playerPaddle.Size = UDim2.fromOffset(paddleW, paddleH)
+	playerPaddle.BackgroundColor3 = Color3.fromRGB(90, 255, 140)
+	playerPaddle.BorderSizePixel = 0
+	playerPaddle.ZIndex = 33
+	playerPaddle.Parent = canvas
+	corner(playerPaddle, 3)
+
+	local aiPaddle = Instance.new("Frame")
+	aiPaddle.Size = UDim2.fromOffset(paddleW, paddleH)
+	aiPaddle.BackgroundColor3 = Color3.fromRGB(255, 120, 120)
+	aiPaddle.BorderSizePixel = 0
+	aiPaddle.ZIndex = 33
+	aiPaddle.Parent = canvas
+	corner(aiPaddle, 3)
+
+	local ball = Instance.new("Frame")
+	ball.Size = UDim2.fromOffset(10, 10)
+	ball.BackgroundColor3 = WHITE
+	ball.BorderSizePixel = 0
+	ball.ZIndex = 33
+	ball.Parent = canvas
+	corner(ball, 5)
+
+	local playerY = H / 2 - paddleH / 2
+	local aiY = playerY
+	local targetPlayerY = playerY
+	local ballPos = Vector2.new(W / 2 - 5, H / 2 - 5)
+	local ballVel = Vector2.new(150, 100)
+	local playerScore, aiScore = 0, 0
+
+	local function resetBall(direction)
+		ballPos = Vector2.new(W / 2 - 5, H / 2 - 5)
+		ballVel = Vector2.new(160 * direction, math.random(-80, 80))
+		if math.abs(ballVel.Y) < 40 then
+			ballVel = Vector2.new(ballVel.X, 60)
+		end
+	end
+
+	local function updateScore()
+		scoreLabel.Text = ("You %d  x  %d CPU"):format(playerScore, aiScore)
+	end
+
+	local function finish()
+		running = false
+		local won = playerScore > aiScore
+		showGameOver(canvas, won and "You win!" or "CPU wins", ("%d x %d"):format(playerScore, aiScore), function()
+			if gameSession == session then
+				startPong()
+			end
+		end)
+	end
+
+	local inputConn = UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		local abs = canvas.AbsolutePosition
+		local relY = input.Position.Y - abs.Y
+		targetPlayerY = math.clamp(relY - paddleH / 2, 0, H - paddleH)
+	end)
+
+	bindGameKeys({ Enum.KeyCode.W, Enum.KeyCode.S, Enum.KeyCode.Up, Enum.KeyCode.Down })
+
+	task.spawn(function()
+		while running and gameSession == session do
+			local dt = RunService.RenderStepped:Wait()
+			if not running then
+				break
+			end
+			local speed = 260
+			if keyDown(Enum.KeyCode.W, Enum.KeyCode.Up) then
+				targetPlayerY = math.clamp(targetPlayerY - speed * dt, 0, H - paddleH)
+			elseif keyDown(Enum.KeyCode.S, Enum.KeyCode.Down) then
+				targetPlayerY = math.clamp(targetPlayerY + speed * dt, 0, H - paddleH)
+			end
+			playerY = playerY + (targetPlayerY - playerY) * math.min(1, dt * 20)
+
+			local aiTarget = ballPos.Y - paddleH / 2
+			local aiSpeed = 150
+			if aiTarget > aiY then
+				aiY = math.min(aiY + aiSpeed * dt, aiTarget)
+			else
+				aiY = math.max(aiY - aiSpeed * dt, aiTarget)
+			end
+			aiY = math.clamp(aiY, 0, H - paddleH)
+
+			ballPos = ballPos + ballVel * dt
+			if ballPos.Y <= 0 then
+				ballPos = Vector2.new(ballPos.X, 0)
+				ballVel = Vector2.new(ballVel.X, math.abs(ballVel.Y))
+			end
+			if ballPos.Y >= H - 10 then
+				ballPos = Vector2.new(ballPos.X, H - 10)
+				ballVel = Vector2.new(ballVel.X, -math.abs(ballVel.Y))
+			end
+
+			if ballVel.X < 0 and ballPos.X <= 10 + paddleW and ballPos.X >= 0 then
+				if ballPos.Y + 10 >= playerY and ballPos.Y <= playerY + paddleH then
+					ballPos = Vector2.new(10 + paddleW, ballPos.Y)
+					local rel = ((ballPos.Y + 5) - (playerY + paddleH / 2)) / (paddleH / 2)
+					ballVel = Vector2.new(math.abs(ballVel.X) * 1.05, rel * 220)
+					if math.abs(ballVel.X) > 420 then
+						ballVel = Vector2.new(420, ballVel.Y)
+					end
+				end
+			end
+
+			if ballVel.X > 0 and ballPos.X + 10 >= W - 10 - paddleW and ballPos.X <= W - 10 then
+				if ballPos.Y + 10 >= aiY and ballPos.Y <= aiY + paddleH then
+					ballPos = Vector2.new(W - 10 - paddleW - 10, ballPos.Y)
+					local rel = ((ballPos.Y + 5) - (aiY + paddleH / 2)) / (paddleH / 2)
+					ballVel = Vector2.new(-math.abs(ballVel.X) * 1.05, rel * 220)
+					if math.abs(ballVel.X) > 420 then
+						ballVel = Vector2.new(-420, ballVel.Y)
+					end
+				end
+			end
+
+			if ballPos.X < -10 then
+				aiScore = aiScore + 1
+				updateScore()
+				if aiScore >= 5 then
+					finish()
+					break
+				end
+				resetBall(1)
+			elseif ballPos.X > W + 10 then
+				playerScore = playerScore + 1
+				updateScore()
+				if playerScore >= 5 then
+					finish()
+					break
+				end
+				resetBall(-1)
+			end
+
+			playerPaddle.Position = UDim2.fromOffset(10, playerY)
+			aiPaddle.Position = UDim2.fromOffset(W - 10 - paddleW, aiY)
+			ball.Position = UDim2.fromOffset(ballPos.X, ballPos.Y)
+		end
+	end)
+
+	setGameCleanup(function()
+		running = false
+		inputConn:Disconnect()
+		unbindGameKeys()
+	end)
+end
+
+-- ===== Memory =====
+local function startMemory()
+	clearGameContent()
+	gameTitle.Text = "Memory"
+	gameBackBtn.Visible = true
+	local session = gameSession + 1
+	gameSession = session
+
+	local running = true
+	local accepting = false
+	local sequence = {}
+	local inputIndex = 1
+	local level = 0
+
+	local status = gameLabel(gameContent, "Watch the sequence...", UDim2.new(1, -20, 0, 24), UDim2.new(0, 10, 0, 8), 14, WHITE, true)
+	status.TextXAlignment = Enum.TextXAlignment.Center
+
+	local grid = Instance.new("Frame")
+	grid.Size = UDim2.fromOffset(260, 220)
+	grid.Position = UDim2.new(0.5, -130, 0, 48)
+	grid.BackgroundTransparency = 1
+	grid.ZIndex = 32
+	grid.Parent = gameContent
+
+	local colors = {
+		Color3.fromRGB(230, 70, 70),
+		Color3.fromRGB(70, 200, 120),
+		Color3.fromRGB(70, 130, 230),
+		Color3.fromRGB(230, 200, 70),
+	}
+	local positions = {
+		UDim2.fromOffset(0, 0),
+		UDim2.fromOffset(135, 0),
+		UDim2.fromOffset(0, 115),
+		UDim2.fromOffset(135, 115),
+	}
+	local buttons = {}
+
+	local function flash(i, duration)
+		local original = colors[i]
+		buttons[i].BackgroundColor3 = original:Lerp(WHITE, 0.55)
+		task.delay(duration, function()
+			if buttons[i] and buttons[i].Parent then
+				buttons[i].BackgroundColor3 = original
+			end
+		end)
+	end
+
+	local showSequence
+	showSequence = function()
+		accepting = false
+		inputIndex = 1
+		status.Text = "Watch..."
+		task.spawn(function()
+			task.wait(0.5)
+			for _, idx in ipairs(sequence) do
+				if not running or gameSession ~= session then
+					return
+				end
+				flash(idx, 0.35)
+				task.wait(0.55)
+			end
+			if running and gameSession == session then
+				status.Text = "Your turn!"
+				accepting = true
+			end
+		end)
+	end
+
+	for i = 1, 4 do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(125, 105)
+		b.Position = positions[i]
+		b.BackgroundColor3 = colors[i]
+		b.Text = ""
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.ZIndex = 33
+		b.Parent = grid
+		corner(b, 10)
+		local st = Instance.new("UIStroke")
+		st.Color = Color3.fromRGB(20, 20, 26)
+		st.Thickness = 2
+		st.Parent = b
+		buttons[i] = b
+		b.MouseButton1Click:Connect(function()
+			if not running or not accepting then
+				return
+			end
+			if i == sequence[inputIndex] then
+				flash(i, 0.18)
+				inputIndex = inputIndex + 1
+				if inputIndex > #sequence then
+					accepting = false
+					level = level + 1
+					status.Text = "Level " .. level .. "! Next..."
+					task.delay(0.7, function()
+						if running and gameSession == session then
+							sequence[#sequence + 1] = math.random(1, 4)
+							showSequence()
+						end
+					end)
+				end
+			else
+				running = false
+				accepting = false
+				status.Text = "Wrong! Score: " .. level
+				showGameOver(grid, "Game Over", "Level reached: " .. level, function()
+					if gameSession == session then
+						startMemory()
+					end
+				end)
+			end
+		end)
+	end
+
+	sequence = { math.random(1, 4) }
+	showSequence()
+
+	setGameCleanup(function()
+		running = false
+		accepting = false
+	end)
+end
+
+-- ===== Tic-Tac-Toe =====
+local function startTicTacToe()
+	clearGameContent()
+	gameTitle.Text = "Tic-Tac-Toe"
+	gameBackBtn.Visible = true
+	local session = gameSession + 1
+	gameSession = session
+
+	local running = true
+	local status = gameLabel(gameContent, "You are X. Your turn!", UDim2.new(1, -20, 0, 24), UDim2.new(0, 10, 0, 8), 14, WHITE, true)
+	status.TextXAlignment = Enum.TextXAlignment.Center
+
+	local grid = Instance.new("Frame")
+	grid.Size = UDim2.fromOffset(270, 270)
+	grid.Position = UDim2.new(0.5, -135, 0, 42)
+	grid.BackgroundTransparency = 1
+	grid.ZIndex = 32
+	grid.Parent = gameContent
+
+	local board = {}
+	local cells = {}
+	local gameOver = false
+	local playerTurn = true
+
+	local function checkWinner(b)
+		local lines = {
+			{ 1, 2, 3 }, { 4, 5, 6 }, { 7, 8, 9 },
+			{ 1, 4, 7 }, { 2, 5, 8 }, { 3, 6, 9 },
+			{ 1, 5, 9 }, { 3, 5, 7 },
+		}
+		for _, l in ipairs(lines) do
+			if b[l[1]] and b[l[1]] == b[l[2]] and b[l[2]] == b[l[3]] then
+				return b[l[1]]
+			end
+		end
+		for i = 1, 9 do
+			if not b[i] then
+				return nil
+			end
+		end
+		return "draw"
+	end
+
+	local function finish(result)
+		gameOver = true
+		running = false
+		local title
+		if result == "X" then
+			title = "You win!"
+		elseif result == "O" then
+			title = "CPU wins"
+		else
+			title = "Draw"
+		end
+		showGameOver(grid, title, "Tic-Tac-Toe", function()
+			if gameSession == session then
+				startTicTacToe()
+			end
+		end)
+	end
+
+	local function aiMove()
+		if gameOver or not running then
+			return
+		end
+		local function findMove(mark)
+			for i = 1, 9 do
+				if not board[i] then
+					board[i] = mark
+					local w = checkWinner(board)
+					board[i] = nil
+					if w == mark then
+						return i
+					end
+				end
+			end
+			return nil
+		end
+		local move = findMove("O") or findMove("X")
+		if not move then
+			if not board[5] then
+				move = 5
+			else
+				local corners = { 1, 3, 7, 9 }
+				local freeCorners = {}
+				for _, i in ipairs(corners) do
+					if not board[i] then
+						freeCorners[#freeCorners + 1] = i
+					end
+				end
+				if #freeCorners > 0 then
+					move = freeCorners[math.random(1, #freeCorners)]
+				else
+					local free = {}
+					for i = 1, 9 do
+						if not board[i] then
+							free[#free + 1] = i
+						end
+					end
+					move = free[math.random(1, #free)]
+				end
+			end
+		end
+		if move then
+			board[move] = "O"
+			cells[move].Text = "O"
+			cells[move].TextColor3 = Color3.fromRGB(255, 120, 120)
+		end
+		local w = checkWinner(board)
+		if w then
+			finish(w)
+		else
+			playerTurn = true
+			status.Text = "Your turn!"
+		end
+	end
+
+	local function playerMove(i)
+		if gameOver or not running or not playerTurn or board[i] then
+			return
+		end
+		board[i] = "X"
+		cells[i].Text = "X"
+		cells[i].TextColor3 = Color3.fromRGB(120, 220, 255)
+		local w = checkWinner(board)
+		if w then
+			finish(w)
+			return
+		end
+		playerTurn = false
+		status.Text = "CPU thinking..."
+		task.delay(0.35, function()
+			if running and gameSession == session then
+				aiMove()
+			end
+		end)
+	end
+
+	for i = 1, 9 do
+		local row = math.floor((i - 1) / 3)
+		local col = (i - 1) % 3
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(86, 86)
+		b.Position = UDim2.fromOffset(col * 92, row * 92)
+		b.BackgroundColor3 = Color3.fromRGB(32, 35, 46)
+		b.Text = ""
+		b.TextColor3 = WHITE
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 38
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.ZIndex = 33
+		b.Parent = grid
+		corner(b, 8)
+		local st = Instance.new("UIStroke")
+		st.Color = Color3.fromRGB(70, 75, 90)
+		st.Thickness = 1.5
+		st.Parent = b
+		cells[i] = b
+		b.MouseButton1Click:Connect(function()
+			playerMove(i)
+		end)
+	end
+
+	setGameCleanup(function()
+		running = false
+	end)
+end
+
+-- ===== Game menu =====
+local function openGameMenu()
+	clearGameContent()
+	gameTitle.Text = "Mini Games"
+	gameBackBtn.Visible = false
+	gameWindow.Visible = true
+
+	local list = Instance.new("Frame")
+	list.Size = UDim2.new(1, -24, 1, -24)
+	list.Position = UDim2.fromOffset(12, 12)
+	list.BackgroundTransparency = 1
+	list.ZIndex = 32
+	list.Parent = gameContent
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 24)
+	title.BackgroundTransparency = 1
+	title.Text = "Choose a game:"
+	title.TextColor3 = Color3.fromRGB(200, 205, 220)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 13
+	title.LayoutOrder = 0
+	title.ZIndex = 32
+	title.Parent = list
+
+	local games = {
+		{ name = "Snake", desc = "Eat apples and don't hit the walls", start = startSnake },
+		{ name = "Pong", desc = "First to 5 points wins", start = startPong },
+		{ name = "Memory", desc = "Repeat the color sequence", start = startMemory },
+		{ name = "Tic-Tac-Toe", desc = "You are X, beat the CPU", start = startTicTacToe },
+	}
+
+	for i, g in ipairs(games) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1, 0, 0, 42)
+		b.BackgroundColor3 = btnColor()
+		b.Text = g.name .. "  —  " .. g.desc
+		b.TextColor3 = WHITE
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 12
+		b.TextWrapped = true
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.LayoutOrder = i
+		b.ZIndex = 33
+		b.Parent = list
+		corner(b, 8)
+		local st = Instance.new("UIStroke")
+		st.Color = OFF_STROKE
+		st.Thickness = 1.5
+		st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		st.Parent = b
+		b.MouseButton1Click:Connect(function()
+			g.start()
+		end)
+	end
+end
+
+gameBackBtn.MouseButton1Click:Connect(function()
+	openGameMenu()
+end)
+
+gameCloseBtn.MouseButton1Click:Connect(function()
+	clearGameContent()
+	gameWindow.Visible = false
+end)
+
+local playGameBtn = makeButton(playerPage, "Play Game", 3)
+playGameBtn.Name = "PlayGame"
+playGameBtn.MouseButton1Click:Connect(function()
+	openGameMenu()
+end)
+
 -- SETTINGS page
 local settingsPage = makePage(body, 4)
 settingsPage.Visible = false
@@ -1325,6 +2460,11 @@ makeToggle(settingsPage, "Auto Execute On Teleport", 6, function(v)
 	end
 end, state.autoExecTeleport)
 autoExecReady = true
+
+makeToggle(settingsPage, "Hide Game Messages", 7, function(v)
+	state.hideMessages = v
+	refreshMessageConnections()
+end, state.hideMessages)
 
 -- ABOUT page
 local aboutPage = makePage(body, 6)
@@ -1477,13 +2617,13 @@ local function unitOwnedByMe(unit)
 		if owner:IsA("ObjectValue") then
 			return owner.Value == me
 		elseif owner:IsA("StringValue") then
-			return owner.Value == me.Name
+			return owner.Value == me.Name or owner.Value == tostring(me.UserId)
 		end
 	end
 	for _, key in ipairs({ "Owner", "owner", "Player", "player", "OwnerId", "UserId" }) do
 		local v = unit:GetAttribute(key)
 		if v ~= nil then
-			return v == me.Name or v == me.UserId
+			return v == me or v == me.Name or v == me.UserId or tostring(v) == tostring(me.UserId)
 		end
 	end
 	return nil
@@ -1540,6 +2680,35 @@ local function flatDist(a, b)
 	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
 end
 
+-- Returns a point at the bottom of a unit model (the ground under it).
+-- Using the bounding box instead of the pivot also works for tall units.
+local function unitGroundPosition(unit)
+	local ok, cf, size = pcall(function()
+		return unit:GetBoundingBox()
+	end)
+	if ok and cf and size then
+		return Vector3.new(cf.Position.X, cf.Position.Y - size.Y / 2, cf.Position.Z)
+	end
+	local ok2, pivot = pcall(function()
+		return unit:GetPivot()
+	end)
+	if ok2 and pivot then
+		return pivot.Position
+	end
+	return nil
+end
+
+-- The unit's origin / pivot, which is what spawn_unit expects as CFrame.Position.
+local function unitPivotPosition(unit)
+	local ok, pivot = pcall(function()
+		return unit:GetPivot()
+	end)
+	if ok and pivot then
+		return pivot.Position
+	end
+	return unitGroundPosition(unit)
+end
+
 local function farFrom(list, pos, dist)
 	for _, p in ipairs(list) do
 		if flatDist(p, pos) < dist then
@@ -1565,6 +2734,212 @@ local function isBad(pos)
 		end
 	end
 	return false
+end
+
+-- If the script has not learned a valid placement area yet, look for likely
+-- placement pads / plots / bases in the map and use them as search centers.
+local autoCenterCache = { time = 0, list = {} }
+
+local function findAutoCenters()
+	local now = os.clock()
+	if now - autoCenterCache.time < 8 then
+		return autoCenterCache.list
+	end
+	autoCenterCache.time = now
+	local list = {}
+	local keywords = { "place", "placement", "pad", "plot", "base", "tower", "unit", "zone", "platform", "spawn" }
+	local function relevant(name)
+		local n = name:lower()
+		for _, k in ipairs(keywords) do
+			if n:find(k, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+	local function add(pos)
+		for _, p in ipairs(list) do
+			if flatDist(p, pos) < 4 then
+				return
+			end
+		end
+		list[#list + 1] = pos
+	end
+	local function addInstance(inst)
+		if inst:IsA("BasePart") and relevant(inst.Name) then
+			-- Use the top surface of pads / baseplates, not their center.
+			add(inst.Position + Vector3.new(0, inst.Size.Y / 2, 0))
+		elseif inst:IsA("Model") and relevant(inst.Name) then
+			local ok, cf, size = pcall(function()
+				return inst:GetBoundingBox()
+			end)
+			if ok and cf and size then
+				add(Vector3.new(cf.Position.X, cf.Position.Y - size.Y / 2, cf.Position.Z))
+			end
+		end
+	end
+	-- Check the top level first, so a baseplate / plot is found even in a big map.
+	for _, inst in ipairs(workspace:GetChildren()) do
+		addInstance(inst)
+	end
+	local stack = { workspace }
+	local visited = 0
+	while #stack > 0 and visited < 3000 do
+		local inst = table.remove(stack)
+		visited = visited + 1
+		addInstance(inst)
+		for _, child in ipairs(inst:GetChildren()) do
+			if not child:IsA("Terrain") and not child:IsA("Player") then
+				stack[#stack + 1] = child
+			end
+		end
+	end
+	autoCenterCache.list = list
+	return list
+end
+
+-- Finds the local player's own units / plot / base, so auto place does not
+-- try to use another player's plot when the game has per-player plots.
+local playerCenterCache = { time = 0, list = {} }
+
+local function findPlayerCenters()
+	local list = {}
+	local function add(pos)
+		for _, p in ipairs(list) do
+			if flatDist(p, pos) < 4 then
+				return
+			end
+		end
+		list[#list + 1] = pos
+	end
+	local me = Players.LocalPlayer
+	local folder = getUnitsFolder()
+	if folder then
+		for _, u in ipairs(folder:GetChildren()) do
+			if unitOwnedByMe(u) == true then
+				local p = unitPivotPosition(u)
+				if p then
+					add(p)
+				end
+			end
+		end
+	end
+	local char = me.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if root then
+		add(root.Position)
+	end
+
+	local now = os.clock()
+	if now - playerCenterCache.time < 8 then
+		for _, p in ipairs(playerCenterCache.list) do
+			add(p)
+		end
+		return list
+	end
+	playerCenterCache.time = now
+
+	local found = {}
+	local function addFound(pos)
+		for _, p in ipairs(found) do
+			if flatDist(p, pos) < 4 then
+				return
+			end
+		end
+		found[#found + 1] = pos
+	end
+	local charSet = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Character then
+			charSet[plr.Character] = true
+		end
+	end
+	local myName = me.Name:lower()
+	local myId = tostring(me.UserId)
+	local function nameHasToken(name, token)
+		if token == "" then
+			return false
+		end
+		local start = 1
+		while true do
+			local s, e = name:find(token, start, true)
+			if not s then
+				return false
+			end
+			local before = s > 1 and name:sub(s - 1, s - 1) or ""
+			local after = e < #name and name:sub(e + 1, e + 1) or ""
+			if (before == "" or not before:match("[%w]")) and (after == "" or not after:match("[%w]")) then
+				return true
+			end
+			start = e + 1
+		end
+	end
+	local queue = {}
+	for _, child in ipairs(workspace:GetChildren()) do
+		queue[#queue + 1] = child
+	end
+	local index = 1
+	local visited = 0
+	while index <= #queue and visited < 1500 do
+		local inst = queue[index]
+		index = index + 1
+		visited = visited + 1
+		if inst ~= char and inst ~= folder and not charSet[inst] and not inst:IsA("Player") and not inst:IsA("Terrain") then
+			local owned = false
+			local name = inst.Name:lower()
+			local relevantName = name:find("plot", 1, true) or name:find("base", 1, true) or name:find("unit", 1, true) or name:find("tower", 1, true) or name:find("place", 1, true) or name:find("spawn", 1, true) or name:find("zone", 1, true)
+			if name == myName or nameHasToken(name, myId) or (relevantName and nameHasToken(name, myName)) then
+				owned = true
+			end
+			if not owned then
+				for _, key in ipairs({ "Owner", "owner", "Player", "player", "OwnerId", "UserId" }) do
+					local v = inst:GetAttribute(key)
+					if v ~= nil and (v == me or v == me.Name or v == me.UserId or tostring(v) == myId) then
+						owned = true
+						break
+					end
+				end
+			end
+			if not owned then
+				for _, child in ipairs(inst:GetChildren()) do
+					if child:IsA("ObjectValue") and child.Value == me then
+						owned = true
+						break
+					end
+				end
+			end
+			if owned then
+				if inst:IsA("BasePart") then
+					addFound(inst.Position + Vector3.new(0, inst.Size.Y / 2, 0))
+				elseif inst:IsA("Model") then
+					local ok, cf, size = pcall(function()
+						return inst:GetBoundingBox()
+					end)
+					if ok and cf and size then
+						addFound(Vector3.new(cf.Position.X, cf.Position.Y - size.Y / 2, cf.Position.Z))
+					end
+				else
+					-- A folder named after the player: keep looking inside it.
+					for _, child in ipairs(inst:GetChildren()) do
+						if not child:IsA("Player") and not child:IsA("Terrain") then
+							queue[#queue + 1] = child
+						end
+					end
+				end
+			else
+				for _, child in ipairs(inst:GetChildren()) do
+					if not child:IsA("Player") and not child:IsA("Terrain") then
+						queue[#queue + 1] = child
+					end
+				end
+			end
+		end
+	end
+	playerCenterCache.list = found
+	for _, p in ipairs(found) do
+		add(p)
+	end
+	return list
 end
 
 local rayParams = RaycastParams.new()
@@ -1614,6 +2989,30 @@ local function buildGroundFilter()
 	for _, p in ipairs(goodSpots) do
 		learnFrom(p)
 	end
+	-- Before the script has a learned spot, learn from the player's own area
+	-- and from units already on the map (they are standing on valid ground).
+	if #learned.positions == 0 and #goodSpots == 0 then
+		local okPC, pcList = pcall(findPlayerCenters)
+		if okPC and type(pcList) == "table" then
+			for _, p in ipairs(pcList) do
+				learnFrom(p)
+			end
+		end
+		local folder = getUnitsFolder()
+		if folder then
+			local n = 0
+			for _, u in ipairs(folder:GetChildren()) do
+				n = n + 1
+				if n > 30 then
+					break
+				end
+				local p = unitGroundPosition(u)
+				if p then
+					learnFrom(p)
+				end
+			end
+		end
+	end
 	return any and f or nil
 end
 
@@ -1635,18 +3034,65 @@ local function groundOk(hit, filter)
 end
 
 local function pickSpot()
-	local centers = {}
+	local playerCenters = {}
+	local otherCenters = {}
+	local function addTo(list, p)
+		for _, c in ipairs(list) do
+			if flatDist(c, p) < 2 then
+				return
+			end
+		end
+		list[#list + 1] = p
+	end
 	for _, p in ipairs(learned.positions) do
-		centers[#centers + 1] = p
+		addTo(playerCenters, p)
 	end
 	for _, p in ipairs(goodSpots) do
-		centers[#centers + 1] = p
+		addTo(playerCenters, p)
 	end
-	if #centers == 0 then
-		local char = Players.LocalPlayer.Character
-		local root = char and char:FindFirstChild("HumanoidRootPart")
-		if root then
-			centers[1] = root.Position
+	-- Learned spots are always preferred. Before the script learns one, use the
+	-- local player's own units / plot / character position first.
+	if #learned.positions == 0 and #goodSpots == 0 then
+		local okPC, pcList = pcall(findPlayerCenters)
+		if okPC and type(pcList) == "table" then
+			for _, p in ipairs(pcList) do
+				addTo(playerCenters, p)
+			end
+		end
+	end
+	local folder = getUnitsFolder()
+	-- Other players' units / generic pads are only a fallback. If the player's
+	-- own area keeps failing, widen the search to these too.
+	local useFallback = #playerCenters == 0 or (#learned.positions == 0 and #goodSpots == 0 and failStreak >= 4)
+	if useFallback then
+		if folder then
+			local n = 0
+			for _, u in ipairs(folder:GetChildren()) do
+				n = n + 1
+				if n > 30 then
+					break
+				end
+				local p = unitPivotPosition(u)
+				if p then
+					addTo(otherCenters, p)
+				end
+			end
+		end
+		local okAC, acList = pcall(findAutoCenters)
+		if okAC and type(acList) == "table" then
+			for _, p in ipairs(acList) do
+				addTo(otherCenters, p)
+			end
+		end
+	end
+	local centers = playerCenters
+	if useFallback then
+		centers = {}
+		for _, p in ipairs(playerCenters) do
+			addTo(centers, p)
+		end
+		for _, p in ipairs(otherCenters) do
+			addTo(centers, p)
 		end
 	end
 	if #centers == 0 then
@@ -1657,16 +3103,16 @@ local function pickSpot()
 	local filter = buildGroundFilter()
 	-- every failure in a row widens the search a bit, so it stops hitting the same area
 	local radius = (tonumber(state.placeRadius) or 15) * (1 + math.min(failStreak, 12) * 0.25)
+	local char = Players.LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local rootPos = root and root.Position
 
 	local occupied = {}
-	local folder = getUnitsFolder()
 	if folder then
 		for _, u in ipairs(folder:GetChildren()) do
-			local ok, cf = pcall(function()
-				return u:GetPivot()
-			end)
-			if ok and cf then
-				occupied[#occupied + 1] = cf.Position
+			local p = unitGroundPosition(u)
+			if p then
+				occupied[#occupied + 1] = p
 			end
 		end
 	end
@@ -1680,13 +3126,20 @@ local function pickSpot()
 		local flat = Vector3.new(center.X + math.cos(angle) * dist, center.Y, center.Z + math.sin(angle) * dist)
 
 		local hit = rayDown(flat, 25, 80)
-		if hit and math.abs(hit.Position.Y - center.Y) <= 8 and groundOk(hit, useFilter) then
+		if hit and groundOk(hit, useFilter) then
 			-- keep the same height convention the game used for the spot we learned from
-			local cHit = rayDown(center, 4, 12)
+			local cHit = rayDown(center, 20, 60)
+			local centerGroundY = cHit and cHit.Position.Y or center.Y
 			local offset = cHit and (center.Y - cHit.Position.Y) or 0
-			local pos = Vector3.new(flat.X, hit.Position.Y + offset, flat.Z)
-			if farFrom(occupied, pos, MIN_SPACING) and not isBad(pos) then
-				return pos
+			-- The character root is not a unit origin; place at ground level there.
+			if rootPos and flatDist(center, rootPos) < 0.01 and math.abs(center.Y - rootPos.Y) < 0.01 then
+				offset = 0
+			end
+			if math.abs(hit.Position.Y - centerGroundY) <= 8 then
+				local pos = Vector3.new(flat.X, hit.Position.Y + offset, flat.Z)
+				if farFrom(occupied, pos, MIN_SPACING) and not isBad(pos) then
+					return pos
+				end
 			end
 		end
 	end
@@ -1695,48 +3148,82 @@ end
 
 local function pickId(ids)
 	local usable = {}
+	local manualUsable = {}
+	local confirmedUsable = {}
+	local likelyUsable = {}
 	for _, id in ipairs(ids) do
 		if (idFails[id] or 0) < 6 then
 			usable[#usable + 1] = id
+			if learned.manual[id] then
+				manualUsable[#manualUsable + 1] = id
+			elseif learned.confirmed[id] then
+				confirmedUsable[#confirmedUsable + 1] = id
+			elseif learned.likely[id] then
+				likelyUsable[#likelyUsable + 1] = id
+			end
 		end
 	end
 	if #usable == 0 then
 		idFails = {}
-		usable = ids
+		return ids[math.random(1, #ids)]
 	end
-	return usable[math.random(1, #usable)]
+	local pool = manualUsable
+	if #pool == 0 then
+		pool = confirmedUsable
+	end
+	if #pool == 0 then
+		pool = likelyUsable
+	end
+	if #pool == 0 then
+		pool = usable
+	end
+	return pool[math.random(1, #pool)]
 end
 
 -- Places one unit and checks if it really appeared (your unit count goes up)
 local function tryPlace(id, pos)
 	local before = #myUnits()
+	env.SatisHubAutoPlacing = true
 	local ok, res = invokeRet("spawn_unit", id, CFrame.new(pos))
+	env.SatisHubAutoPlacing = nil
 	if not ok or res == false then
 		return false
 	end
 	if getUnitsFolder() then
-		for _ = 1, 6 do
+		for _ = 1, 10 do
 			task.wait(0.12)
 			if #myUnits() > before then
+				addUnitId(id, true, true)
 				return true
 			end
 		end
 		return false
 	end
+	addUnitId(id, true, true)
 	return true
 end
 
 local function collectUnitIds()
 	local list = {}
+	local seen = {}
+	local function add(id)
+		if type(id) == "string" and not seen[id] then
+			seen[id] = true
+			list[#list + 1] = id
+		end
+	end
 	for id in pairs(learned.ids) do
-		list[#list + 1] = id
+		add(id)
 	end
 	for token in tostring(state.unitIds):gmatch("[^,;%s]+") do
 		local id = token
 		if id:sub(1, 1) ~= "{" then
 			id = "{" .. id .. "}"
 		end
-		list[#list + 1] = id
+		add(id)
+		-- IDs typed by the user are a strong hint, so prefer them first.
+		learned.manual[id] = true
+		learned.likely[id] = true
 	end
 	return list
 end
@@ -1745,10 +3232,18 @@ task.spawn(function()
 	local wasOn = false
 	while alive() do
 		local ids = collectUnitIds()
-		if #ids == 0 and state.randomPlace and os.clock() - lastScan > 5 then
-			task.spawn(scanUnitIds)
+		if state.randomPlace and os.clock() - lastScan > 15 then
+			-- Scan while we still have no confirmed unit ID, or while we have no IDs at all.
+			-- This catches the inventory once it loads / after the shop is opened.
+			if #ids == 0 or next(learned.confirmed) == nil then
+				task.spawn(scanUnitIds, false)
+			end
 		end
-		placeStatus.Text = ("Units: %d | Spots: %d | Placed: %d"):format(learned.count, #learned.positions, placedCount)
+		if #ids == 0 then
+			placeStatus.Text = "No IDs yet - open the shop or press Scan Units"
+		else
+			placeStatus.Text = ("IDs: %d | Spots: %d | Placed: %d"):format(#ids, #learned.positions + #goodSpots, placedCount)
+		end
 
 		-- fresh start every time the option is turned on
 		if state.randomPlace and not wasOn then
@@ -1757,6 +3252,8 @@ task.spawn(function()
 			idFails = {}
 			failStreak = 0
 		end
+
+linha 3254
 		wasOn = state.randomPlace
 
 		if state.randomPlace and #ids > 0 then
