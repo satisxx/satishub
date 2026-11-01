@@ -179,7 +179,7 @@ end)
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-MiniGames-2026-11-01-delay5-autoscan"
+local SCRIPT_BUILD = "SatisHub-2026-11-01-settings-visible-v2"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -998,7 +998,7 @@ local titulo = Instance.new("TextLabel")
 titulo.Size = UDim2.new(1, -40, 1, 0)
 titulo.Position = UDim2.new(0, 10, 0, 0)
 titulo.BackgroundTransparency = 1
-titulo.Text = "SatisHub"
+titulo.Text = "SatisHub V2"
 titulo.TextColor3 = WHITE
 titulo.TextXAlignment = Enum.TextXAlignment.Left
 titulo.Font = Enum.Font.GothamBold
@@ -2530,10 +2530,8 @@ makeToggle(settingsPage, "Hide Game Messages", 7, function(v)
 	refreshMessageConnections()
 end, state.hideMessages)
 
-makeToggle(settingsPage, "RGB Effects", 8, function(v)
-    state.rgbEnabled = v
-    refreshRgb()
-end, state.rgbEnabled)
+-- Display the new settings first so they are easy to find.
+makeLabel(settingsPage, "BUILD: SETTINGS-V2 | Auto Scan + Incognito", 8)
 
 makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
     state.autoScanUnits = v
@@ -2544,6 +2542,11 @@ makeToggle(settingsPage, "Incognito Mode", 10, function(v)
     state.incognitoMode = v
     refreshIncognito()
 end, state.incognitoMode)
+
+makeToggle(settingsPage, "RGB Effects", 11, function(v)
+    state.rgbEnabled = v
+    refreshRgb()
+end, state.rgbEnabled)
 
 -- ABOUT page
 local aboutPage = makePage(body, 6)
@@ -2683,6 +2686,8 @@ task.spawn(function()
 	end
 end)
 
+-- Unit automation lives in a separate function to keep the main Luau chunk below the 200-local-register limit.
+local function startUnitAutomation()
 -- ===== Unit helpers (placement / upgrade) =====
 local function getUnitsFolder()
 	return workspace:FindFirstChild("_UNITS")
@@ -3394,12 +3399,14 @@ task.spawn(function()
 	end
 end)
 
+end
+task.spawn(startUnitAutomation)
+
 -- Auto join event: only one matchmaking request per activation.
 -- Repeated requests every five seconds can overlap with a server teleport.
-local autoJoinRequested = false
-local autoJoinBusy = false
-
 task.spawn(function()
+    local autoJoinRequested = false
+    local autoJoinBusy = false
 	while alive() do
 		if not state.autoJoinEvent then
 			autoJoinRequested = false
