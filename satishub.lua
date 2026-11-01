@@ -73,6 +73,7 @@ local state = {
 	transparent = false,
 	autoUpgrade = false,
 	autoScanUnits = false,
+	minimizeKey = "RightShift",
 	incognitoMode = false,
 	autoExecTeleport = true,
 	cardOption = "2",
@@ -2471,7 +2472,7 @@ end, state.autoExecTeleport)
 autoExecReady = true
 
 -- Display the new settings first so they are easy to find.
-makeLabel(settingsPage, "BUILD: UPGRADE-THROTTLED | Auto Scan + Incognito", 8)
+makeLabel(settingsPage, "BUILD: KEYBIND-V1 | Auto Scan + Incognito", 8)
 
 makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
     state.autoScanUnits = v
@@ -2487,6 +2488,45 @@ makeToggle(settingsPage, "RGB Effects", 11, function(v)
     state.rgbEnabled = v
     refreshRgb()
 end, state.rgbEnabled)
+
+-- ===== Configurable minimize / restore keybind =====
+-- Runs in its own scope to avoid adding locals to the main chunk.
+do
+    local function keyName()
+        local stored = tostring(state.minimizeKey or "RightShift")
+        return Enum.KeyCode[stored] and stored or "RightShift"
+    end
+
+    local capture = false
+    local keyButton = makeButton(settingsPage, "Minimize Key: " .. keyName(), 12)
+
+    keyButton.MouseButton1Click:Connect(function()
+        capture = true
+        keyButton.Text = "Press a key (Esc to cancel)"
+    end)
+
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if not alive() or input.UserInputType ~= Enum.UserInputType.Keyboard then
+            return
+        end
+        if capture then
+            capture = false
+            if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+                state.minimizeKey = input.KeyCode.Name
+                saveSettings()
+            end
+            keyButton.Text = "Minimize Key: " .. keyName()
+            return
+        end
+        -- Don't toggle while typing a key or using another game's menu.
+        if processed or UserInputService:GetFocusedTextBox() then
+            return
+        end
+        if input.KeyCode.Name == keyName() and gui.Enabled and not keyPage.Visible then
+            setMinimized(not miniIcon.Visible)
+        end
+    end)
+end
 
 -- ABOUT page
 local aboutPage = makePage(body, 6)
