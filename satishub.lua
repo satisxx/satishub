@@ -1681,8 +1681,8 @@ userBar.Parent = frame
 userBar.Visible = false
 
 local avatar = Instance.new("ImageLabel")
-avatar.Size = UDim2.fromOffset(26, 26)
-avatar.Position = UDim2.new(0, 278, 0.5, -13)
+avatar.Size = UDim2.fromOffset(18, 18)
+avatar.Position = UDim2.new(0, 220, 0, 29)
 avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 avatar.BorderSizePixel = 0
 avatar.Parent = userBar
@@ -1704,8 +1704,8 @@ userLabel.Parent = userBar
 do
     local ready = Instance.new("TextLabel")
     ready.Name = "AnimePurpleStatus"
-    ready.Size = UDim2.new(0, 240, 1, 0)
-    ready.Position = UDim2.new(0, 51, 0, 0)
+    ready.Size = UDim2.new(0, 200, 0, 24)
+    ready.Position = UDim2.new(0, 51, 0, 3)
     ready.BackgroundTransparency = 1
     ready.Font = Enum.Font.GothamBold
     ready.TextColor3 = Color3.fromRGB(234, 217, 255)
@@ -1724,19 +1724,41 @@ do
     version.Size = UDim2.fromOffset(83, 48)
     version.Position = UDim2.new(1, -96, 0, 0)
     version.BackgroundTransparency = 1
-    version.Text = "v3.7"
+    version.Text = "v3.9"
     version.Font = Enum.Font.GothamBold
     version.TextColor3 = Color3.fromRGB(208, 156, 255)
     version.TextSize = 15
     version.Parent = userBar
 end
 
+-- Executor label: centered in the footer, with a safe fallback.
+do
+    local executorDisplay = tostring(execName or "unknown")
+    if executorDisplay == "" or executorDisplay == "unknown" then
+        executorDisplay = "Unknown Executor"
+    end
+    local executorLabel = Instance.new("TextLabel")
+    executorLabel.Name = "ExecutorName"
+    executorLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    executorLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    executorLabel.Size = UDim2.new(0, 205, 0, 32)
+    executorLabel.BackgroundTransparency = 1
+    executorLabel.Text = "Executor: " .. executorDisplay
+    executorLabel.Font = Enum.Font.GothamBold
+    executorLabel.TextSize = 12
+    executorLabel.TextColor3 = Color3.fromRGB(210, 166, 255)
+    executorLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    executorLabel.TextXAlignment = Enum.TextXAlignment.Center
+    executorLabel.ZIndex = 3
+    executorLabel.Parent = userBar
+end
+
 -- Incognito hides account details from the SatisHub footer only.
 local function refreshIncognito()
     avatar.Visible = not state.incognitoMode
     userLabel.Text = state.incognitoMode and "User: Hidden" or ("User: " .. Players.LocalPlayer.Name)
-    userLabel.Position = state.incognitoMode and UDim2.new(0, 280, 0, 0) or UDim2.new(0, 320, 0, 0)
-    userLabel.Size = state.incognitoMode and UDim2.new(0, 270, 1, 0) or UDim2.new(0, 235, 1, 0)
+    userLabel.Position = UDim2.new(0, 51, 0, 27)
+    userLabel.Size = UDim2.new(0, 163, 0, 22)
 end
 refreshIncognito()
 
