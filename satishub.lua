@@ -1168,6 +1168,121 @@ local function makePage(parentObj, order)
 	return p
 end
 
+-- V3.8: Roblox-native icons. Do not rely on Unicode glyphs: some executors/fonts
+-- render them as missing-character squares. Everything below is built from Frames.
+local function drawAnimeIcon(parent, kind, x, y, pixelSize, tint)
+    local holder = Instance.new("Frame")
+    holder.Name = "AnimeVectorIcon"
+    holder.BackgroundTransparency = 1
+    holder.BorderSizePixel = 0
+    holder.Position = UDim2.fromOffset(x, y)
+    holder.Size = UDim2.fromOffset(pixelSize, pixelSize)
+    holder.Parent = parent
+    local u = pixelSize / 24
+
+    local function bar(cx, cy, w, h, rotation, rounded)
+        local f = Instance.new("Frame")
+        f.AnchorPoint = Vector2.new(0.5, 0.5)
+        f.Position = UDim2.fromOffset(cx * u, cy * u)
+        f.Size = UDim2.fromOffset(math.max(w * u, 1), math.max(h * u, 1))
+        f.Rotation = rotation or 0
+        f.BorderSizePixel = 0
+        f.BackgroundColor3 = tint
+        f.Parent = holder
+        if rounded then
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, math.max(1, rounded * u))
+            c.Parent = f
+        end
+        return f
+    end
+    local function outline(cx, cy, w, h, radius, thickness)
+        local f = Instance.new("Frame")
+        f.AnchorPoint = Vector2.new(0.5, 0.5)
+        f.Position = UDim2.fromOffset(cx * u, cy * u)
+        f.Size = UDim2.fromOffset(w * u, h * u)
+        f.BackgroundTransparency = 1
+        f.BorderSizePixel = 0
+        f.Parent = holder
+        if radius then
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, radius * u)
+            c.Parent = f
+        end
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = tint
+        stroke.Thickness = math.max(1.2, (thickness or 1.8) * u)
+        stroke.Parent = f
+        return f
+    end
+
+    if kind == "main" then
+        bar(7, 8, 12, 2.4, -44, 1)
+        bar(17, 8, 12, 2.4, 44, 1)
+        bar(5.2, 15, 2.4, 10, 0, 1)
+        bar(18.8, 15, 2.4, 10, 0, 1)
+        bar(12, 19.4, 15, 2.4, 0, 1)
+        bar(12, 16, 4, 8, 0, 1)
+    elseif kind == "event" or kind == "calendar" then
+        outline(12, 13, 18, 17, 3, 1.8)
+        bar(12, 9, 17, 2.1, 0, 1)
+        bar(8, 4, 2.5, 5.5, 0, 1)
+        bar(16, 4, 2.5, 5.5, 0, 1)
+        bar(8, 14, 3, 3, 0, 1)
+        bar(13, 14, 3, 3, 0, 1)
+    elseif kind == "player" then
+        local head = bar(12, 7.1, 10, 10, 0, 8)
+        bar(12, 19, 18, 8, 0, 6)
+    elseif kind == "settings" then
+        -- Sliders: recognisable, evenly spaced, no special font required.
+        bar(12, 5, 20, 2, 0, 1)
+        bar(12, 12, 20, 2, 0, 1)
+        bar(12, 19, 20, 2, 0, 1)
+        bar(8, 5, 5, 6, 0, 2)
+        bar(16, 12, 5, 6, 0, 2)
+        bar(10, 19, 5, 6, 0, 2)
+    elseif kind == "about" then
+        outline(12, 12, 19, 19, 12, 1.9)
+        bar(12, 7, 3, 3, 0, 2)
+        bar(12, 14, 2.5, 8, 0, 1)
+    elseif kind == "play" then
+        outline(12, 12, 19, 19, 12, 1.7)
+        bar(11, 10, 2.2, 10, -43, 1)
+        bar(11, 14, 2.2, 10, 43, 1)
+    elseif kind == "skip" then
+        for shift = 0, 6 do
+            if shift == 0 or shift == 6 then
+                bar(7 + shift, 9, 2.2, 9, -43, 1)
+                bar(7 + shift, 15, 2.2, 9, 43, 1)
+            end
+        end
+        bar(19.5, 12, 2.2, 13, 0, 1)
+    elseif kind == "place" then
+        outline(8, 8, 10, 10, 2.5, 1.7)
+        outline(16, 16, 10, 10, 2.5, 1.7)
+    elseif kind == "upgrade" then
+        bar(12, 14, 2.5, 15, 0, 1)
+        bar(8.2, 8.2, 2.5, 11, 45, 1)
+        bar(15.8, 8.2, 2.5, 11, -45, 1)
+    elseif kind == "leave" then
+        outline(8, 12, 11, 18, 3, 1.7)
+        bar(14, 12, 13, 2.3, 0, 1)
+        bar(17, 9, 2.3, 8, -45, 1)
+        bar(17, 15, 2.3, 8, 45, 1)
+    elseif kind == "brand" then
+        -- Four-point anime emblem composed entirely of Roblox frames.
+        bar(12, 12, 5, 20, 45, 1)
+        bar(12, 12, 5, 20, -45, 1)
+        bar(12, 12, 5, 20, 135, 1)
+        bar(12, 12, 5, 20, -135, 1)
+        bar(12, 12, 5, 5, 45, 1)
+    else
+        bar(12, 12, 12, 12, 45, 2)
+        bar(12, 12, 5, 5, 45, 1)
+    end
+    return holder
+end
+
 -- Flat button with a thin border. rgb = true gives it an RGB border (used by toggles when ON).
 local function makeButton(parentObj, text, order, rgb)
 	local b = Instance.new("TextButton")
@@ -1245,16 +1360,14 @@ local function makeToggle(parentObj, name, order, onChange, initial)
     stroke.Thickness = 1.1
     grad.Enabled = false
 
-    local symbol = Instance.new("TextLabel")
-    symbol.Name = "PurpleSymbol"
-    symbol.Size = UDim2.fromOffset(28, 30)
-    symbol.Position = UDim2.new(0, 13, 0.5, -15)
-    symbol.BackgroundTransparency = 1
-    symbol.Text = "✦"
-    symbol.Font = Enum.Font.GothamBold
-    symbol.TextSize = 24
-    symbol.TextColor3 = Color3.fromRGB(188, 79, 255)
-    symbol.Parent = b
+    local iconKind = "diamond"
+    if name:find("Skip") then iconKind = "skip"
+    elseif name:find("Place") then iconKind = "place"
+    elseif name:find("Upgrade") then iconKind = "upgrade"
+    elseif name:find("Leave") then iconKind = "leave"
+    elseif name:find("Daily") or name:find("Event") then iconKind = "calendar"
+    elseif name:find("Start") then iconKind = "play" end
+    local symbol = drawAnimeIcon(b, iconKind, 15, 13, 22, Color3.fromRGB(188, 79, 255))
 
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Name = "OptionName"
@@ -1305,7 +1418,7 @@ local function makeToggle(parentObj, name, order, onChange, initial)
         if knob.Position ~= targetPos then
             TweenService:Create(knob, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = targetPos}):Play()
         end
-        symbol.TextColor3 = special and Color3.fromRGB(255, 166, 73) or Color3.fromRGB(186, 80, 255)
+        -- Vector icon is made of Frames; it does not require font glyph support.
         stroke.Color = on and accent or Color3.fromRGB(78, 37, 116)
         grad.Enabled = false -- Preserve the screenshot's single-tone purple look.
     end
@@ -1418,21 +1531,10 @@ do
     sub.Parent = header
 end
 
--- Violet insignia recreates the four-blade mark from the visual mock-up.
+-- Icon is drawn with Roblox frames, so it cannot render as a missing glyph.
 do
-    local logo = Instance.new("TextLabel")
-    logo.Name = "AnimePurpleLogo"
-    logo.Size = UDim2.fromOffset(72, 72)
-    logo.Position = UDim2.fromOffset(17, 8)
-    logo.BackgroundTransparency = 1
-    logo.Text = "✦"
-    logo.Font = Enum.Font.GothamBold
-    logo.TextSize = 63
-    logo.TextColor3 = Color3.fromRGB(184, 64, 255)
-    logo.TextStrokeColor3 = Color3.fromRGB(90, 19, 166)
-    logo.TextStrokeTransparency = 0.3
-    logo.ZIndex = 3
-    logo.Parent = header
+    local brand = drawAnimeIcon(header, "brand", 24, 15, 63, Color3.fromRGB(191, 81, 255))
+    brand.Name = "AnimePurpleLogo"
 end
 
 -- RGB title
@@ -1446,7 +1548,7 @@ local minBtn = Instance.new("TextButton")
 minBtn.Size = UDim2.fromOffset(36, 36)
 minBtn.Position = UDim2.new(1, -99, 0, 25)
 minBtn.BackgroundColor3 = btnColor()
-minBtn.Text = "–"
+minBtn.Text = "-"
 minBtn.TextColor3 = WHITE
 minBtn.Font = Enum.Font.GothamBold
 minBtn.TextSize = 16
@@ -1714,7 +1816,7 @@ local function makeTab(text, order, key)
 	local b = Instance.new("TextButton")
 	b.Size = UDim2.new(1, -18, 0, 55)
 	b.BackgroundColor3 = Color3.fromRGB(27, 12, 49)
-	b.Text = "    " .. text
+	b.Text = ""
     b.TextXAlignment = Enum.TextXAlignment.Left
 	b.TextColor3 = WHITE
 	b.Font = Enum.Font.GothamBold
@@ -1742,19 +1844,22 @@ local function makeTab(text, order, key)
     b.MouseLeave:Connect(function()
         TweenService:Create(tabScale, TweenInfo.new(0.18, Enum.EasingStyle.Quart), {Scale=1}):Play()
     end)
-    local glyph = Instance.new("TextLabel")
+    local glyph = drawAnimeIcon(b, key, 14, 15, 23, Color3.fromRGB(204, 119, 255))
     glyph.Name = "SidebarGlyph"
-    glyph.Position = UDim2.new(0, 10, 0, 0)
-    glyph.Size = UDim2.fromOffset(33, 54)
-    glyph.BackgroundTransparency = 1
-    glyph.Font = Enum.Font.GothamBold
-    glyph.TextSize = 21
-    glyph.TextXAlignment = Enum.TextXAlignment.Center
-    glyph.TextColor3 = Color3.fromRGB(200, 114, 255)
-    glyph.Text = ({main="⌂", event="▣", player="●", settings="⚙", about="ⓘ"})[key] or "✦"
-    glyph.Parent = b
-    b.Text = "       " .. text
-    tabInfo[key] = { btn = b, stroke = stroke, grad = grad, underline=underline, glyph=glyph }
+    local label = Instance.new("TextLabel")
+    label.Name = "SidebarLabel"
+    label.Position = UDim2.fromOffset(51, 0)
+    label.Size = UDim2.new(1, -61, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 15
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Center
+    label.TextTruncate = Enum.TextTruncate.AtEnd
+    label.TextColor3 = Color3.fromRGB(197, 148, 234)
+    label.Text = text
+    label.Parent = b
+    tabInfo[key] = { btn = b, stroke = stroke, grad = grad, underline=underline, glyph=glyph, label=label }
 	return b
 end
 
@@ -1772,6 +1877,7 @@ refreshTabs = function()
             TextColor3 = active and Color3.fromRGB(251, 238, 255) or Color3.fromRGB(197, 148, 234)
         }):Play()
         info.grad.Enabled = active and state.rgbEnabled
+        info.label.TextColor3 = active and Color3.fromRGB(251, 238, 255) or Color3.fromRGB(197, 148, 234)
         info.stroke.Color = active and Color3.fromRGB(189, 75, 255) or OFF_STROKE
         TweenService:Create(info.underline, TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
             Size = active and UDim2.new(0.66, 0, 0, 2) or UDim2.new(0, 0, 0, 2)
@@ -2126,7 +2232,7 @@ gameBackBtn = Instance.new("TextButton")
 gameBackBtn.Size = UDim2.fromOffset(28, 26)
 gameBackBtn.Position = UDim2.new(1, -68, 0, 5)
 gameBackBtn.BackgroundColor3 = btnColor()
-gameBackBtn.Text = "←"
+gameBackBtn.Text = "<"
 gameBackBtn.TextColor3 = WHITE
 gameBackBtn.Font = Enum.Font.GothamBold
 gameBackBtn.TextSize = 16
@@ -2975,7 +3081,7 @@ local function openGameMenu()
 		local b = Instance.new("TextButton")
 		b.Size = UDim2.new(1, 0, 0, 42)
 		b.BackgroundColor3 = btnColor()
-		b.Text = g.name .. "  —  " .. g.desc
+		b.Text = g.name .. "  -  " .. g.desc
 		b.TextColor3 = WHITE
 		b.Font = Enum.Font.GothamBold
 		b.TextSize = 12
@@ -3236,7 +3342,7 @@ do
 
     local side = Instance.new("Frame")
     side.Name = "AnimePurpleSidebar"
-    side.Size = UDim2.new(0, 171, 1, 0)
+    side.Size = UDim2.new(0, 184, 1, 0)
     side.Position = UDim2.fromOffset(0, 0)
     side.BackgroundColor3 = Color3.fromRGB(19, 5, 35)
     side.BorderSizePixel = 0
@@ -3263,10 +3369,10 @@ do
 
     local sideDecoration = Instance.new("TextLabel")
     sideDecoration.Name = "SidebarCaption"
-    sideDecoration.Position = UDim2.new(0, 15, 1, -53)
+    sideDecoration.Position = UDim2.new(0, 25, 1, -53)
     sideDecoration.Size = UDim2.new(1, -30, 0, 29)
     sideDecoration.BackgroundTransparency = 1
-    sideDecoration.Text = "✦   ANIME PURPLE"
+    sideDecoration.Text = "ANIME PURPLE"
     sideDecoration.Font = Enum.Font.GothamBold
     sideDecoration.TextSize = 10
     sideDecoration.TextColor3 = Color3.fromRGB(160, 81, 210)
@@ -3275,8 +3381,8 @@ do
 
     local right = Instance.new("Frame")
     right.Name = "AnimePurpleContent"
-    right.Position = UDim2.fromOffset(182, 8)
-    right.Size = UDim2.new(1, -192, 1, -16)
+    right.Position = UDim2.fromOffset(196, 8)
+    right.Size = UDim2.new(1, -207, 1, -16)
     right.BackgroundColor3 = Color3.fromRGB(24, 7, 45)
     right.BorderSizePixel = 0
     right.ClipsDescendants = true
@@ -3331,10 +3437,10 @@ do
 
     animeUI.pageTitle = Instance.new("TextLabel")
     animeUI.pageTitle.Name = "AnimePageTitle"
-    animeUI.pageTitle.Size = UDim2.new(1, -34, 0, 43)
-    animeUI.pageTitle.Position = UDim2.fromOffset(26, 18)
+    animeUI.pageTitle.Size = UDim2.new(1, -66, 0, 43)
+    animeUI.pageTitle.Position = UDim2.fromOffset(62, 18)
     animeUI.pageTitle.BackgroundTransparency = 1
-    animeUI.pageTitle.Text = "✦  Main"
+    animeUI.pageTitle.Text = "Main"
     animeUI.pageTitle.TextXAlignment = Enum.TextXAlignment.Left
     animeUI.pageTitle.TextColor3 = Color3.fromRGB(250, 238, 255)
     animeUI.pageTitle.Font = Enum.Font.GothamBold
@@ -3342,6 +3448,8 @@ do
     animeUI.pageTitle.TextStrokeColor3 = Color3.fromRGB(17, 4, 29)
     animeUI.pageTitle.TextStrokeTransparency = 0.47
     animeUI.pageTitle.Parent = right
+    animeUI.pageIcon = drawAnimeIcon(right, "main", 25, 26, 27, Color3.fromRGB(192, 79, 255))
+    animeUI.pageIcon.Name = "AnimePageIcon"
 
     animeUI.pageDesc = Instance.new("TextLabel")
     animeUI.pageDesc.Name = "AnimePageDesc"
@@ -3398,13 +3506,18 @@ local function showTab(name)
     refreshTabs()
     if animeUI.pageTitle then
         local titleData = ({
-            main = {"✦  Main", "Core automation features"},
-            event = {"✦  Evento", "Event and card automation"},
-            player = {"✦  Player", "Player tools and mini games"},
-            settings = {"✦  Settings", "Customize your SatisHub"},
-            about = {"✦  About", "Script information and credits"}
+            main = {"Main", "Core automation features"},
+            event = {"Evento", "Event and card automation"},
+            player = {"Player", "Player tools and mini games"},
+            settings = {"Settings", "Customize your SatisHub"},
+            about = {"About", "Script information and credits"}
         })[name]
         animeUI.pageTitle.Text = titleData[1]
+        if animeUI.pageIcon then
+            animeUI.pageIcon:Destroy()
+            animeUI.pageIcon = drawAnimeIcon(animeUI.pageTitle.Parent, name, 25, 26, 27, Color3.fromRGB(192, 79, 255))
+            animeUI.pageIcon.Name = "AnimePageIcon"
+        end
         animeUI.pageDesc.Text = titleData[2]
         animeUI.scroll.CanvasPosition = Vector2.new(0, 0)
         local scTitle = animeUI.pageTitle:FindFirstChild("AnimeTitleScale")
