@@ -598,8 +598,8 @@ queueSelf()
 -- Black background (changeable in Settings), grey controls, RGB borders. Green only means "ON".
 local ON_COLOR = Color3.fromRGB(0, 170, 100)
 local ERROR_COLOR = Color3.fromRGB(240, 70, 70)
-local OFF_STROKE = Color3.fromRGB(75, 75, 85)
-local DEFAULT_THEME = Color3.fromRGB(8, 8, 8)
+local OFF_STROKE = Color3.fromRGB(45, 59, 82)
+local DEFAULT_THEME = Color3.fromRGB(11, 14, 23)
 local WHITE = Color3.new(1, 1, 1)
 
 -- RGB palette (first and last colors match so the rotation loops smoothly)
@@ -985,7 +985,7 @@ if not fromQueue then
 end
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(280, 0)
+frame.Size = UDim2.fromOffset(320, 0)
 frame.AutomaticSize = Enum.AutomaticSize.Y
 frame.Position = UDim2.new(0, 20, 0.5, -120)
 frame.BackgroundColor3 = currentTheme
@@ -993,8 +993,14 @@ frame.BorderSizePixel = 0
 frame.ClipsDescendants = true
 frame.Visible = false -- shown after the loading screen
 frame.Parent = gui
-corner(frame, 14)
-addRgbStroke(frame, 3)
+corner(frame, 16)
+addRgbStroke(frame, 2)
+do
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(45, 62, 91)
+    st.Thickness = 1
+    st.Parent = frame
+end
 
 local frameLayout = Instance.new("UIListLayout")
 frameLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -1011,7 +1017,7 @@ local gameHeader
 local refreshTabs
 
 local function btnColor()
-	return currentTheme:Lerp(WHITE, 0.14)
+	return currentTheme:Lerp(Color3.fromRGB(74, 96, 139), 0.27)
 end
 
 local function applyTheme(c)
@@ -1080,17 +1086,17 @@ end
 -- Flat button with a thin border. rgb = true gives it an RGB border (used by toggles when ON).
 local function makeButton(parentObj, text, order, rgb)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(1, -20, 0, 32)
+	b.Size = UDim2.new(1, -24, 0, 36)
 	b.BackgroundColor3 = btnColor()
 	b.Text = text
 	b.TextColor3 = WHITE
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 13
+	b.TextSize = 12
 	b.BorderSizePixel = 0
 	b.AutoButtonColor = false
 	b.LayoutOrder = order or 0
 	b.Parent = parentObj
-	corner(b, 8)
+	corner(b, 10)
 
 	local stroke, grad
 	if rgb then
@@ -1116,8 +1122,11 @@ local function makeButton(parentObj, text, order, rgb)
 		sc.Scale = 1
 	end)
 	b.MouseLeave:Connect(function()
-		sc.Scale = 1
-	end)
+        TweenService:Create(sc, TweenInfo.new(0.14, Enum.EasingStyle.Quad), {Scale=1}):Play()
+    end)
+    b.MouseEnter:Connect(function()
+        TweenService:Create(sc, TweenInfo.new(0.14, Enum.EasingStyle.Quad), {Scale=1.015}):Play()
+    end)
 	return b, stroke, grad
 end
 
@@ -1222,22 +1231,34 @@ end
 
 -- Header (title + minimize)
 header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 34)
+header.Size = UDim2.new(1, 0, 0, 54)
 header.BackgroundColor3 = currentTheme:Lerp(Color3.new(0, 0, 0), 0.3)
 header.BorderSizePixel = 0
 header.LayoutOrder = 1
 header.Parent = frame
 
 local titulo = Instance.new("TextLabel")
-titulo.Size = UDim2.new(1, -40, 1, 0)
-titulo.Position = UDim2.new(0, 10, 0, 0)
+titulo.Size = UDim2.new(1, -48, 0, 27)
+titulo.Position = UDim2.new(0, 12, 0, 5)
 titulo.BackgroundTransparency = 1
-titulo.Text = "SatisHub V2"
+titulo.Text = "⚡ SatisHub V3"
 titulo.TextColor3 = WHITE
 titulo.TextXAlignment = Enum.TextXAlignment.Left
 titulo.Font = Enum.Font.GothamBold
 titulo.TextSize = 19
 titulo.Parent = header
+do
+    local sub = Instance.new("TextLabel")
+    sub.Size = UDim2.new(1,-48,0,15)
+    sub.Position = UDim2.new(0,14,0,31)
+    sub.Text = "ULTIMATE AUTOMATION HUB"
+    sub.TextSize = 9
+    sub.Font = Enum.Font.GothamMedium
+    sub.TextXAlignment = Enum.TextXAlignment.Left
+    sub.BackgroundTransparency = 1
+    sub.TextColor3 = Color3.fromRGB(132,153,188)
+    sub.Parent = header
+end
 
 -- RGB title
 local titleGrad = Instance.new("UIGradient")
@@ -1248,7 +1269,7 @@ titleGrad.Enabled = state.rgbEnabled
 
 local minBtn = Instance.new("TextButton")
 minBtn.Size = UDim2.fromOffset(24, 24)
-minBtn.Position = UDim2.new(1, -32, 0, 5)
+minBtn.Position = UDim2.new(1, -34, 0, 15)
 minBtn.BackgroundColor3 = btnColor()
 minBtn.Text = "–"
 minBtn.TextColor3 = WHITE
@@ -1394,7 +1415,7 @@ msgKey.TextXAlignment = Enum.TextXAlignment.Center
 
 -- Tabs row
 local tabsRow = Instance.new("Frame")
-tabsRow.Size = UDim2.new(1, 0, 0, 34)
+tabsRow.Size = UDim2.new(1, 0, 0, 44)
 tabsRow.BackgroundTransparency = 1
 tabsRow.LayoutOrder = 2
 tabsRow.Visible = false
@@ -1417,7 +1438,7 @@ local activeTab = "main"
 
 local function makeTab(text, order, key)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0.20, -5, 1, -6)
+	b.Size = UDim2.new(0.20, -5, 1, -8)
 	b.BackgroundColor3 = currentTheme:Lerp(WHITE, 0.08)
 	b.Text = text
 	b.TextColor3 = WHITE
@@ -1442,10 +1463,12 @@ local tabAbout = makeTab("About", 5, "about")
 refreshTabs = function()
 	for key, info in pairs(tabInfo) do
 		local active = (key == activeTab)
-		info.btn.BackgroundColor3 = currentTheme:Lerp(WHITE, active and 0.22 or 0.08)
-		info.btn.TextColor3 = active and WHITE or Color3.fromRGB(170, 170, 175)
-		info.grad.Enabled = active
-		info.stroke.Color = active and WHITE or OFF_STROKE
+		TweenService:Create(info.btn, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundColor3 = active and Color3.fromRGB(33, 55, 92) or Color3.fromRGB(22, 28, 42),
+            TextColor3 = active and Color3.fromRGB(147, 194, 255) or Color3.fromRGB(155, 166, 186)
+        }):Play()
+        info.grad.Enabled = active and state.rgbEnabled
+        info.stroke.Color = active and Color3.fromRGB(105, 159, 239) or OFF_STROKE
 	end
 end
 
@@ -2869,7 +2892,7 @@ local function makeText(parentObj, text, order, size, color, bold)
 	return l
 end
 
-makeText(aboutPage, "SatisHub", 1, 17, WHITE, true)
+makeText(aboutPage, "SatisHub V3", 1, 17, WHITE, true)
 makeText(aboutPage, "Discord: satis1x", 2, 14, Color3.fromRGB(210, 210, 220), true)
 
 local copyBtn = makeButton(aboutPage, "Copy Discord", 3)
@@ -2887,13 +2910,34 @@ makeText(aboutPage, autoExecStatus, 5, 11, Color3.fromRGB(170, 175, 190), false)
 
 -- Tab switching
 local function showTab(name)
-	activeTab = name
-	mainPage.Visible = (name == "main")
-	eventPage.Visible = (name == "event")
-	playerPage.Visible = (name == "player")
-	settingsPage.Visible = (name == "settings")
-	aboutPage.Visible = (name == "about")
-	refreshTabs()
+    -- V3: short scale/fade-feel transition without delaying functionality.
+    -- A per-page UIScale avoids modifying the size of the automatic layout.
+    if activeTab == name and ((name == "main" and mainPage.Visible) or
+        (name == "event" and eventPage.Visible) or
+        (name == "player" and playerPage.Visible) or
+        (name == "settings" and settingsPage.Visible) or
+        (name == "about" and aboutPage.Visible)) then
+        return
+    end
+    activeTab = name
+    mainPage.Visible = (name == "main")
+    eventPage.Visible = (name == "event")
+    playerPage.Visible = (name == "player")
+    settingsPage.Visible = (name == "settings")
+    aboutPage.Visible = (name == "about")
+    refreshTabs()
+    local page = (name == "main" and mainPage) or
+        (name == "event" and eventPage) or
+        (name == "player" and playerPage) or
+        (name == "settings" and settingsPage) or aboutPage
+    local scale = page:FindFirstChild("SatisV3TabScale")
+    if not scale then
+        scale = Instance.new("UIScale")
+        scale.Name = "SatisV3TabScale"
+        scale.Parent = page
+    end
+    scale.Scale = 0.96
+    TweenService:Create(scale, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Scale = 1}):Play()
 end
 
 tabMain.MouseButton1Click:Connect(function()
