@@ -72,6 +72,7 @@ local state = {
     dailyResetAt = 0,
     dailyCompletedResetAt = 0,
     dailyJoinPending = false,
+    dailyLockUntil = 0,
 	randomPlace = false,
 	placeRadius = "15",
 	unitIds = "",
@@ -143,97 +144,100 @@ end
 
 loadSettings()
 
--- ===== Daily Challenge: server-driven countdown and one completion per reset =====
--- The event provides seconds REMAINING; do NOT firesignal it (that only fakes client state).
--- Keep one table in the main chunk to avoid Luau's 200-local-register limit.
+-- ===== Daily Challenge: reset countdown + completion lock =====
+-- Completion is stored independently so a late timer sync cannot erase it.
 local dailyChallenge = {}
 do
-    local PERIOD = 24 * 60 * 60
+    local PERIOD = 86400
     local function now() return os.time() end
-    local function resetExpiry()
-        local deadline = tonumber(state.dailyResetAt) or 0
-        if deadline <= 0 then return 0 end
-        if now() >= deadline then
-            -- Predict the next reset in 24-hour increments if no new server event arrived.
-            deadline = deadline + (math.floor((now() - deadline) / PERIOD) + 1) * PERIOD
-            state.dailyResetAt = deadline
-            state.dailyCompletedResetAt = 0
-            state.dailyJoinPending = false
+    local function deadline()
+        local t = tonumber(state.dailyResetAt) or 0
+        if t > 0 and now() >= t then
+            t = t + (math.floor((now() - t) / PERIOD) + 1) * PERIOD
+            state.dailyResetAt = t
+            if (tonumber(state.dailyLockUntil) or 0) <= now() then
+                state.dailyLockUntil = 0
+                state.dailyCompletedResetAt = 0
+                state.dailyJoinPending = false
+            end
             saveSettings()
         end
-        return deadline
+        return t
     end
     function dailyChallenge.remaining()
-        local deadline = resetExpiry()
-        return deadline > 0 and math.max(0, deadline - now()) or nil
+        local t = deadline()
+        return t > 0 and math.max(0, t - now()) or nil
     end
     function dailyChallenge.completed()
-        local deadline = resetExpiry()
-        return deadline > 0 and (tonumber(state.dailyCompletedResetAt) or 0) == deadline
+        return (tonumber(state.dailyLockUntil) or 0) > now()
     end
     function dailyChallenge.canJoin()
         return not dailyChallenge.completed()
     end
     function dailyChallenge.markFinished()
-        -- Only lock a daily run requested by this script (not unrelated normal matches).
         if not state.dailyJoinPending then return end
-        local deadline = resetExpiry()
-        if deadline <= 0 then
-            -- If the countdown hasn't arrived, start a conservative 24h lock;
-            -- a later authoritative server countdown replaces this estimate.
-            deadline = now() + PERIOD
-            state.dailyResetAt = deadline
-        end
-        state.dailyCompletedResetAt = deadline
+        dailyChallenge.markCompleted('game_finished')
+    end
+    function dailyChallenge.markCompleted(reason)
+        local t = deadline()
+        if t <= now() then t = now() + PERIOD end
+        state.dailyResetAt = t
+        state.dailyLockUntil = t
+        state.dailyCompletedResetAt = t
         state.dailyJoinPending = false
         saveSettings()
-        print('[SatisHub] Daily Challenge completed; Auto Join blocked until reset.')
+        print('[SatisHub] Daily Challenge: COMPLETED (' .. tostring(reason) .. '); locked until daily reset.')
     end
     function dailyChallenge.requested()
         state.dailyJoinPending = true
         saveSettings()
     end
     local serverEvents = endpoints and endpoints:FindFirstChild('server_to_client')
-    local timerEvent = serverEvents and serverEvents:FindFirstChild('daily_challenge_remaining_time_changed')
-    if timerEvent and timerEvent:IsA('RemoteEvent') then
-        timerEvent.OnClientEvent:Connect(function(seconds)
-            if not alive() then return end
-            local remaining = tonumber(seconds)
-            if not remaining or remaining < 0 or remaining > PERIOD + 300 then return end
-            local oldDeadline = tonumber(state.dailyResetAt) or 0
-            local newDeadline = now() + math.floor(remaining)
-            -- Ignore minor drift but accept an actual reset/window change.
-            if oldDeadline > 0 and math.abs(newDeadline - oldDeadline) <= 90 then
-                return
-            end
-            state.dailyResetAt = newDeadline
-            -- Transfer a completion lock when the same reset deadline is resynchronized.
-            if oldDeadline > 0 and (tonumber(state.dailyCompletedResetAt) or 0) == oldDeadline
-                and math.abs(newDeadline - oldDeadline) <= 300 then
-                state.dailyCompletedResetAt = newDeadline
-            elseif oldDeadline == 0 then
+    local function onCountdown(seconds)
+        if not alive() then return end
+        local remaining = tonumber(seconds)
+        if not remaining or remaining < 0 or remaining > PERIOD + 300 then return end
+        local old = tonumber(state.dailyResetAt) or 0
+        local fresh = now() + math.floor(remaining)
+        if old > 0 and math.abs(fresh - old) < 90 then return end
+        local locked = dailyChallenge.completed()
+        local oldLock = tonumber(state.dailyLockUntil) or 0
+        state.dailyResetAt = fresh
+        if locked then
+            -- Correct an estimated deadline without losing the completion lock.
+            -- Only unlock after an actual new day has begun.
+            if old > 0 and now() >= old and fresh > old + 300 then
+                state.dailyLockUntil = 0
                 state.dailyCompletedResetAt = 0
-                state.dailyJoinPending = false
-            elseif newDeadline > oldDeadline + 300 then
-                -- The server moved the deadline forward: a new daily cycle.
-                state.dailyCompletedResetAt = 0
-                state.dailyJoinPending = false
-            elseif (tonumber(state.dailyCompletedResetAt) or 0) == oldDeadline then
-                -- A late first server sync may correct the estimated reset time;
-                -- do not accidentally unlock a challenge that was just completed.
-                state.dailyCompletedResetAt = newDeadline
+            else
+                state.dailyLockUntil = fresh
+                state.dailyCompletedResetAt = fresh
             end
-            saveSettings()
-        end)
-    else
-        warn('[SatisHub] Daily Challenge timer event unavailable; using last saved reset.')
+        elseif oldLock > 0 and oldLock <= now() then
+            state.dailyLockUntil = 0
+            state.dailyCompletedResetAt = 0
+        end
+        saveSettings()
+        print('[SatisHub] Daily countdown synced: ' .. tostring(math.floor(remaining)) .. 's remaining')
     end
-    local finish = serverEvents and serverEvents:FindFirstChild('game_finished')
-    if finish and finish:IsA('RemoteEvent') then
-        finish.OnClientEvent:Connect(function()
-            if alive() then dailyChallenge.markFinished() end
-        end)
-    end
+    task.spawn(function()
+        if not serverEvents then return end
+        local ev = serverEvents:WaitForChild('daily_challenge_remaining_time_changed', 30)
+        if ev and ev:IsA('RemoteEvent') then
+            ev.OnClientEvent:Connect(onCountdown)
+        else
+            warn('[SatisHub] Daily countdown signal missing; waiting for a future sync.')
+        end
+    end)
+    task.spawn(function()
+        if not serverEvents then return end
+        local ev = serverEvents:WaitForChild('game_finished', 30)
+        if ev and ev:IsA('RemoteEvent') then
+            ev.OnClientEvent:Connect(function()
+                if alive() then dailyChallenge.markFinished() end
+            end)
+        end
+    end)
 end
 
 -- Started by a queued teleport (auto execute)?
@@ -1479,6 +1483,12 @@ do
         state.autoJoinDailyChallenge = v
         -- If both modes are enabled, Daily Challenge takes priority.
     end, state.autoJoinDailyChallenge)
+    -- Manual completion lock also covers runs finished before SatisHub was launched.
+    local dailyLockButton = makeButton(mainPage, "Mark Daily Completed", 3.65)
+    dailyLockButton.MouseButton1Click:Connect(function()
+        dailyChallenge.markCompleted('manual')
+        dailyLockButton.Text = "Daily Completed - Locked"
+    end)
     local dailyStatus = makeLabel(mainPage, 'Daily reset: syncing with server...', 3.7)
     dailyStatus.TextWrapped = true
     dailyStatus.Size = UDim2.new(1, -20, 0, 26)
@@ -1492,8 +1502,9 @@ do
                 dailyStatus.Text = ('Daily reset: %02d:%02d:%02d | %s'):format(
                     h, m, sec, dailyChallenge.completed() and 'COMPLETED' or 'AVAILABLE')
             else
-                dailyStatus.Text = 'Daily reset: waiting for server countdown...'
+                dailyStatus.Text = dailyChallenge.completed() and 'Daily: COMPLETED | timer awaiting server' or 'Daily reset: waiting for server countdown...'
             end
+            dailyLockButton.Text = dailyChallenge.completed() and 'Daily Completed - Locked' or 'Mark Daily Completed'
             task.wait(1)
         end
     end)
@@ -2893,21 +2904,32 @@ tabAbout.MouseButton1Click:Connect(function()
 	showTab("about")
 end)
 
--- Key verification
--- Checks the key typed after the script is executed.
+-- Key verification: acknowledge a successful key before minimizing.
+local keyVerified = false
 local function verificar()
-	if normalizeKey(caixaKey.Text) == KEY then
-		msgKey.Text = ""
-		keyPage.Visible = false
-		tabsRow.Visible = true
-		showTab("main")
-		state.savedKey = KEY
-		saveSettings()
-        -- The key screen remains accessible at startup; minimize after verification.
-        setMinimized(true)
-	else
-		msgKey.Text = "Invalid key"
-	end
+    if keyVerified then return end
+    if normalizeKey(caixaKey.Text) == KEY then
+        keyVerified = true
+        msgKey.Text = "Success!"
+        msgKey.TextColor3 = Color3.fromRGB(80, 230, 130)
+        botaoKey.Text = "Success!"
+        caixaKey.TextEditable = false
+        state.savedKey = KEY
+        saveSettings()
+
+        -- Keep the key page visible so the confirmation can be read.
+        task.spawn(function()
+            task.wait(2)
+            if not alive() or not gui.Parent then return end
+            keyPage.Visible = false
+            tabsRow.Visible = true
+            showTab("main")
+            setMinimized(true)
+        end)
+    else
+        msgKey.TextColor3 = ERROR_COLOR
+        msgKey.Text = "Invalid key"
+    end
 end
 
 botaoKey.MouseButton1Click:Connect(verificar)
@@ -3885,7 +3907,7 @@ local function runDailyChallengeJoin()
         if not state.autoJoinDailyChallenge then
             requested = false
         elseif not dailyChallenge.canJoin() then
-            requested = false -- Daily was completed; wait for the next reset.
+            requested = false -- Completed: block requests, then permit a fresh attempt after reset.
         elseif not requested and not matchEnding then
             requested = true
             local ok, result = invokeRet("request_matchmaking", "__DAILY_CHALLENGE")
