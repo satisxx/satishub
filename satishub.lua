@@ -55,6 +55,9 @@ local JOIN_INTERVALO = 5
 
 -- Fixed access key (letters and numbers). Change it here whenever you want.
 local KEY = "YJ9IWS8WHFUS6RZZZC73"
+-- Change KEY_AUTH_VERSION whenever you publish a new SatisHub version.
+local KEY_AUTH_VERSION = "SatisHub-V3.3-Key24h"
+local KEY_SESSION_SECONDS = 24 * 60 * 60
 
 local function normalizeKey(s)
 	return (s:upper():gsub("%s+", ""))
@@ -85,6 +88,9 @@ local state = {
 	autoExecTeleport = true,
 	cardOption = "2",
 	savedKey = "",
+    keyValidUntil = 0,
+    keyAuthVersion = "",
+    earlyNoticeSeen = false,
 	rgbEnabled = true,
 	themeColor = "",
     fpsBoost = false,
@@ -377,6 +383,13 @@ learned.likely = learned.likely or {}
 learned.manual = learned.manual or {}
 learned.positions = learned.positions or {}
 learned.count = learned.count or 0
+-- Positions belong to a specific map/server; carrying them between Roblox
+-- places causes placement attempts at coordinates from the previous map.
+if learned.positionsPlaceId ~= game.PlaceId or learned.positionsJobId ~= game.JobId then
+    learned.positions = {}
+    learned.positionsPlaceId = game.PlaceId
+    learned.positionsJobId = game.JobId
+end
 
 -- Scans YOUR player and GUI for unit IDs (format {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}):
 -- instance names, StringValues and attributes. Finds all your units, not only the one you placed.
@@ -676,7 +689,7 @@ end)
 
 -- Remove old instances if the script is executed again
 local parent = (gethui and gethui()) or Players.LocalPlayer:WaitForChild("PlayerGui")
-for _, n in ipairs({ "SatisHub", "SatisHubBlack", "SatisHubESP" }) do
+for _, n in ipairs({ "SatisHub", "SatisHubBlack", "SatisHubESP", "SatisHubFarmingStats" }) do
 	local old = parent:FindFirstChild(n)
 	if old then
 		old:Destroy()
@@ -719,6 +732,8 @@ local function initFarmingDashboard()
     statsGui.Enabled = false
     statsGui.Parent = parent
 
+    -- Close the stats overlay even when the minimize hotkey is unavailable.
+    local disableFromStats
     local panel = Instance.new("Frame")
     panel.AnchorPoint = Vector2.new(0.5, 0.5)
     panel.Position = UDim2.fromScale(0.5, 0.5)
@@ -727,6 +742,23 @@ local function initFarmingDashboard()
     panel.BorderSizePixel = 0
     panel.Parent = statsGui
     Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+    local closeStats = Instance.new("TextButton")
+    closeStats.Name = "CloseStats"
+    closeStats.AnchorPoint = Vector2.new(1, 0)
+    closeStats.Position = UDim2.new(1, -8, 0, 7)
+    closeStats.Size = UDim2.fromOffset(28, 28)
+    closeStats.Text = "X"
+    closeStats.Font = Enum.Font.GothamBold
+    closeStats.TextSize = 14
+    closeStats.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeStats.BackgroundColor3 = Color3.fromRGB(125, 40, 50)
+    closeStats.BorderSizePixel = 0
+    closeStats.ZIndex = 12
+    closeStats.Parent = panel
+    Instance.new("UICorner", closeStats).CornerRadius = UDim.new(0, 7)
+    closeStats.MouseButton1Click:Connect(function()
+        if disableFromStats then disableFromStats() end
+    end)
     local outline = Instance.new("UIStroke", panel)
     outline.Color = Color3.fromRGB(75, 75, 90)
     outline.Thickness = 1.5
@@ -836,7 +868,7 @@ local function initFarmingDashboard()
             oldGraphics = {}
         end
     end
-    return function(enabled)
+    local function applyBoost(enabled)
         statsGui.Enabled = enabled
         setLowGraphics(enabled)
         black.Visible = enabled
@@ -846,6 +878,17 @@ local function initFarmingDashboard()
         if not ok then warn("[SatisHub] FPS Boost: " .. tostring(err)) end
         if enabled then display() end
     end
+    disableFromStats = function()
+        -- Also update the Settings toggle when available.
+        if type(env.SatisHubSetFpsBoostOff) == "function" then
+            env.SatisHubSetFpsBoostOff()
+        else
+            state.fpsBoost = false
+            applyBoost(false)
+            saveSettings()
+        end
+    end
+    return applyBoost
 end
 local setFpsBoost = initFarmingDashboard()
 
@@ -895,10 +938,9 @@ task.spawn(function()
 	end
 end)
 
--- ===== STARTUP NOTICE =====
--- The user has to click "Understood" before the script goes on.
--- (Skipped when the script was started automatically after a teleport: that proves auto execute works.)
-if not fromQueue then
+-- ===== First-time notice (only after successful key verification) =====
+local function showFirstKeyNotice()
+    if state.earlyNoticeSeen then return end
 	local acknowledged = false
 
 	local nCard = Instance.new("Frame")
@@ -979,9 +1021,9 @@ if not fromQueue then
 	until acknowledged or not alive()
 
 	nCard:Destroy()
-	if not alive() then
-		return
-	end
+	if not alive() then return end
+    state.earlyNoticeSeen = true
+    saveSettings()
 end
 
 local frame = Instance.new("Frame")
@@ -2797,12 +2839,19 @@ if not fromQueue then
     state.fpsBoost = false
     saveSettings()
 end
-makeToggle(settingsPage, "FPS BOOST", 0, function(v)
+local fpsToggleButton, fpsToggleSetter = makeToggle(settingsPage, "FPS BOOST", 0, function(v)
     state.fpsBoost = v
     saveSettings()
     setFpsBoost(v)
 end, fromQueue and state.fpsBoost == true)
-
+env.SatisHubSetFpsBoostOff = function()
+    if alive() then fpsToggleSetter(false) end
+end
+-- A manual launch must also restore the 3D renderer, which can remain disabled
+-- from a prior execution or a teleport when a previous GUI was destroyed.
+if not (fromQueue and state.fpsBoost == true) then
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
+end
 
 makeLabel(settingsPage, "GUI color (background)", 1)
 
@@ -3028,8 +3077,23 @@ tabAbout.MouseButton1Click:Connect(function()
 	showTab("about")
 end)
 
--- Key verification: acknowledge a successful key before minimizing.
+-- Key session: valid for 24 hours OR until a new script version is published.
+-- Existing users must verify once to create the new session record.
+local function hasValidKeySession()
+    return state.savedKey == KEY
+        and state.keyAuthVersion == KEY_AUTH_VERSION
+        and tonumber(state.keyValidUntil) ~= nil
+        and os.time() < tonumber(state.keyValidUntil)
+end
+
 local keyVerified = false
+local function unlockMenu()
+    keyPage.Visible = false
+    tabsRow.Visible = true
+    showTab("main")
+    setMinimized(true)
+end
+
 local function verificar()
     if keyVerified then return end
     if normalizeKey(caixaKey.Text) == KEY then
@@ -3039,16 +3103,18 @@ local function verificar()
         botaoKey.Text = "Success!"
         caixaKey.TextEditable = false
         state.savedKey = KEY
+        state.keyAuthVersion = KEY_AUTH_VERSION
+        state.keyValidUntil = os.time() + KEY_SESSION_SECONDS
         saveSettings()
 
-        -- Keep the key page visible so the confirmation can be read.
         task.spawn(function()
             task.wait(2)
             if not alive() or not gui.Parent then return end
-            keyPage.Visible = false
-            tabsRow.Visible = true
-            showTab("main")
-            setMinimized(true)
+            -- Early Version notice is shown ONLY after the first correct key.
+            -- It never appears again once Continue has been clicked.
+            showFirstKeyNotice()
+            if not alive() or not gui.Parent then return end
+            unlockMenu()
         end)
     else
         msgKey.TextColor3 = ERROR_COLOR
@@ -3058,16 +3124,19 @@ end
 
 botaoKey.MouseButton1Click:Connect(verificar)
 caixaKey.FocusLost:Connect(function(enter)
-	if enter then
-		verificar()
-	end
+    if enter then verificar() end
 end)
 
--- Skip key only on a queued teleport when it was previously verified
-if fromQueue and state.savedKey == KEY then
-	keyPage.Visible = false
-	tabsRow.Visible = true
-	showTab("main")
+-- Manual launches and queued teleports both reuse the same verified session.
+if hasValidKeySession() then
+    keyVerified = true
+    unlockMenu()
+else
+    -- Leave the key on screen when the 24h period expires or the build changes.
+    state.savedKey = ""
+    state.keyAuthVersion = ""
+    state.keyValidUntil = 0
+    saveSettings()
 end
 
 applyTheme(currentTheme)
@@ -3780,17 +3849,28 @@ local function pickSpot()
 			end
 		end
 	end
-	local centers = playerCenters
-	if useFallback then
-		centers = {}
-		for _, p in ipairs(playerCenters) do
-			addTo(centers, p)
-		end
-        -- Do not place on other players' plots merely because our own positions failed.
-	end
-	if #centers == 0 then
-		return nil
-	end
+    local centers = {}
+    for _, p in ipairs(playerCenters) do addTo(centers, p) end
+    -- On complex maps the character may be standing on a roof, an elevated
+    -- path, or outside any placement zone. Broaden the search towards actual
+    -- unit locations once local attempts repeatedly fail.
+    if useFallback and failStreak >= 3 then
+        for i, p in ipairs(otherCenters) do
+            if i > 18 then break end
+            addTo(centers, p)
+        end
+    end
+    if #centers == 0 then
+        -- Do not spin forever with zero candidate centers.
+        local ok, points = pcall(findAutoCenters)
+        if ok and type(points) == "table" then
+            for i, p in ipairs(points) do
+                if i > 16 then break end
+                addTo(centers, p)
+            end
+        end
+    end
+    if #centers == 0 then return nil end
 
 	prepareRay()
 	local filter = buildGroundFilter()
@@ -3810,10 +3890,10 @@ local function pickSpot()
 		end
 	end
 
-	for attempt = 1, 60 do
+	for attempt = 1, 38 do
         -- Different maps use different floor names/materials. Prefer learned
         -- ground briefly, then explore flat surfaces near existing units.
-        local useFilter = (attempt <= 20) and filter or nil
+        local useFilter = (attempt <= 12) and filter or nil
 		local center = centers[math.random(1, #centers)]
 		local angle = math.random() * math.pi * 2
 		local dist = math.sqrt(math.random()) * radius
