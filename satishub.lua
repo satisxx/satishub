@@ -994,6 +994,17 @@ frame.ClipsDescendants = true
 frame.Visible = false -- shown after the loading screen
 frame.Parent = gui
 corner(frame, 16)
+-- V3.1: static layered dark gradient (zero per-frame cost).
+do
+    local panelGradient = Instance.new("UIGradient")
+    panelGradient.Name = "SatisV31PanelGradient"
+    panelGradient.Rotation = 90
+    panelGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(17, 27, 47)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 12, 22))
+    })
+    panelGradient.Parent = frame
+end
 addRgbStroke(frame, 2)
 do
     local st = Instance.new("UIStroke")
@@ -1112,20 +1123,37 @@ local function makeButton(parentObj, text, order, rgb)
 		plainButtons[#plainButtons + 1] = b
 	end
 
-	-- pressed look
-	local sc = Instance.new("UIScale")
-	sc.Parent = b
-	b.MouseButton1Down:Connect(function()
-		sc.Scale = 0.96
-	end)
-	b.MouseButton1Up:Connect(function()
-		sc.Scale = 1
-	end)
-	b.MouseLeave:Connect(function()
-        TweenService:Create(sc, TweenInfo.new(0.14, Enum.EasingStyle.Quad), {Scale=1}):Play()
-    end)
+    -- V3.1: smooth spring-like hover and press feedback; no permanent loops.
+    local sc = Instance.new("UIScale")
+    sc.Name = "SatisV31ButtonScale"
+    sc.Parent = b
+    local activeTween
+    local hovering = false
+    local pressing = false
+    local function animateButton()
+        if activeTween then activeTween:Cancel() end
+        local target = pressing and 0.955 or (hovering and 1.018 or 1)
+        activeTween = TweenService:Create(sc,
+            TweenInfo.new(0.19, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            {Scale = target})
+        activeTween:Play()
+    end
+    b.MouseEnter:Connect(function() hovering = true; animateButton() end)
+    b.MouseLeave:Connect(function() hovering = false; pressing = false; animateButton() end)
+    b.MouseButton1Down:Connect(function() pressing = true; animateButton() end)
+    b.MouseButton1Up:Connect(function() pressing = false; animateButton() end)
+    -- Narrow highlight on hover, without changing functional ON/OFF colors.
+    local hoverStroke = Instance.new("UIStroke")
+    hoverStroke.Name = "SatisV31HoverStroke"
+    hoverStroke.Color = Color3.fromRGB(113, 175, 255)
+    hoverStroke.Thickness = 1
+    hoverStroke.Transparency = 1
+    hoverStroke.Parent = b
     b.MouseEnter:Connect(function()
-        TweenService:Create(sc, TweenInfo.new(0.14, Enum.EasingStyle.Quad), {Scale=1.015}):Play()
+        TweenService:Create(hoverStroke, TweenInfo.new(0.22), {Transparency = 0.42}):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(hoverStroke, TweenInfo.new(0.22), {Transparency = 1}):Play()
     end)
 	return b, stroke, grad
 end
@@ -1241,7 +1269,7 @@ local titulo = Instance.new("TextLabel")
 titulo.Size = UDim2.new(1, -48, 0, 27)
 titulo.Position = UDim2.new(0, 12, 0, 5)
 titulo.BackgroundTransparency = 1
-titulo.Text = "⚡ SatisHub V3"
+titulo.Text = "⚡ SatisHub V3.2"
 titulo.TextColor3 = WHITE
 titulo.TextXAlignment = Enum.TextXAlignment.Left
 titulo.Font = Enum.Font.GothamBold
@@ -1317,16 +1345,38 @@ if iconAsset then
 	miniFallback.Visible = false
 end
 
+-- V3.1: animated open/close. Guard against repeated hotkey presses.
+local menuScale = Instance.new("UIScale")
+menuScale.Name = "SatisV31MenuScale"
+menuScale.Parent = frame
+local miniScale = Instance.new("UIScale")
+miniScale.Name = "SatisV31MiniScale"
+miniScale.Parent = miniIcon
+local menuTransition = 0
 local function setMinimized(min)
-	if min then
-		miniIcon.Position = frame.Position
-		frame.Visible = false
-		miniIcon.Visible = true
-	else
-		frame.Position = miniIcon.Position
-		miniIcon.Visible = false
-		frame.Visible = true
-	end
+    menuTransition = menuTransition + 1
+    local token = menuTransition
+    if min then
+        miniIcon.Position = frame.Position
+        miniIcon.Visible = true
+        miniScale.Scale = 0.65
+        TweenService:Create(miniScale, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+        if frame.Visible then
+            local tw = TweenService:Create(menuScale, TweenInfo.new(0.17, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Scale = 0.91})
+            tw:Play()
+            task.delay(0.18, function()
+                if token == menuTransition and alive() then frame.Visible = false end
+            end)
+        else
+            frame.Visible = false
+        end
+    else
+        frame.Position = miniIcon.Position
+        frame.Visible = true
+        miniIcon.Visible = false
+        menuScale.Scale = 0.87
+        TweenService:Create(menuScale, TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+    end
 end
 
 minBtn.MouseButton1Click:Connect(function()
@@ -1450,7 +1500,24 @@ local function makeTab(text, order, key)
 	b.Parent = tabsRow
 	corner(b, 8)
 	local stroke, grad = addRgbStroke(b, 1.5)
-	tabInfo[key] = { btn = b, stroke = stroke, grad = grad }
+	local underline = Instance.new("Frame")
+    underline.Name = "SatisV31ActiveBar"
+    underline.AnchorPoint = Vector2.new(0.5, 1)
+    underline.Position = UDim2.new(0.5, 0, 1, -2)
+    underline.Size = UDim2.new(0, 0, 0, 2)
+    underline.BackgroundColor3 = Color3.fromRGB(100, 177, 255)
+    underline.BorderSizePixel = 0
+    underline.Parent = b
+    corner(underline, 2)
+    local tabScale = Instance.new("UIScale")
+    tabScale.Parent = b
+    b.MouseEnter:Connect(function()
+        TweenService:Create(tabScale, TweenInfo.new(0.18, Enum.EasingStyle.Quart), {Scale=1.045}):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(tabScale, TweenInfo.new(0.18, Enum.EasingStyle.Quart), {Scale=1}):Play()
+    end)
+    tabInfo[key] = { btn = b, stroke = stroke, grad = grad, underline=underline }
 	return b
 end
 
@@ -1469,6 +1536,9 @@ refreshTabs = function()
         }):Play()
         info.grad.Enabled = active and state.rgbEnabled
         info.stroke.Color = active and Color3.fromRGB(105, 159, 239) or OFF_STROKE
+        TweenService:Create(info.underline, TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Size = active and UDim2.new(0.66, 0, 0, 2) or UDim2.new(0, 0, 0, 2)
+        }):Play()
 	end
 end
 
@@ -2936,8 +3006,10 @@ local function showTab(name)
         scale.Name = "SatisV3TabScale"
         scale.Parent = page
     end
-    scale.Scale = 0.96
-    TweenService:Create(scale, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Scale = 1}):Play()
+    scale.Scale = 0.925
+    local previous = page:FindFirstChild("SatisV31PageTween")
+    -- A short easing-out entrance keeps UI responsive during rapid switches.
+    TweenService:Create(scale, TweenInfo.new(0.29, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
 end
 
 tabMain.MouseButton1Click:Connect(function()
@@ -3214,13 +3286,14 @@ local function myUnits()
 	return list
 end
 
--- Auto upgrade: throttle requests to avoid flooding game notifications.
--- Upgrade only one unit per cycle; failed requests trigger a longer cooldown.
-local UPGRADE_INTERVALO = 8
-local UPGRADE_REJECT_COOLDOWN = 25
+-- Auto Upgrade V3.2: rotate units and give each unit its own cooldown.
+-- One request at a time; one rejection no longer pauses every other unit.
+local UPGRADE_INTERVALO = 3.0
+local UPGRADE_REJECT_COOLDOWN = 18
 local upgradeIndex = 0
 local upgradeNextAt = 0
 local upgradeWasOn = false
+local upgradeRetryAt = {}
 
 task.spawn(function()
     while alive() do
@@ -3228,36 +3301,45 @@ task.spawn(function()
             if not upgradeWasOn then
                 upgradeNextAt = 0
                 upgradeIndex = 0
+                upgradeRetryAt = {}
             end
             if os.clock() >= upgradeNextAt then
                 local units = myUnits()
-                if #units > 0 then
+                local chosen
+                -- Skip units on cooldown, instead of blocking the whole loop.
+                for _ = 1, #units do
                     upgradeIndex = (upgradeIndex % #units) + 1
-                    local unit = units[upgradeIndex]
-                    -- InvokeServer may return nil even on success. A false or error
-                    -- indicates rejection; wait longer before another request.
-                    local ok, result = invokeRet("upgrade_unit_ingame", unit)
+                    local candidate = units[upgradeIndex]
+                    if candidate and candidate.Parent and (upgradeRetryAt[candidate] or 0) <= os.clock() then
+                        chosen = candidate
+                        break
+                    end
+                end
+                if chosen then
+                    local ok, result = invokeRet("upgrade_unit_ingame", chosen)
                     if not ok or result == false then
-                        upgradeNextAt = os.clock() + UPGRADE_REJECT_COOLDOWN
+                        upgradeRetryAt[chosen] = os.clock() + UPGRADE_REJECT_COOLDOWN
+                        upgradeNextAt = os.clock() + 4
                     else
+                        -- A nil response does not prove success: leave a moderate delay.
                         upgradeNextAt = os.clock() + UPGRADE_INTERVALO
                     end
                 else
-                    upgradeNextAt = os.clock() + UPGRADE_INTERVALO
+                    upgradeNextAt = os.clock() + 3
                 end
             end
         else
             upgradeNextAt = 0
         end
         upgradeWasOn = state.autoUpgrade
-        task.wait(0.5)
+        task.wait(0.4)
     end
 end)
 
 -- ===== Smart random placement =====
 -- Learns what kind of floor the spots you used are on, then picks random spots only on that floor,
 -- away from other units and from spots that failed. When a spot fails it moves on to another one.
-local PLACE_INTERVALO = 1.5
+local PLACE_INTERVALO = 0.7
 local MIN_SPACING = 3.5 -- minimum distance (studs) from other units
 local BAD_SPOT_RADIUS = 3 -- area blocked around a spot where placing failed
 local BAD_SPOT_TTL = 120 -- seconds a failed spot stays blocked
@@ -3728,7 +3810,7 @@ local function pickSpot()
 		end
 	end
 
-	for attempt = 1, 85 do
+	for attempt = 1, 60 do
         -- Different maps use different floor names/materials. Prefer learned
         -- ground briefly, then explore flat surfaces near existing units.
         local useFilter = (attempt <= 20) and filter or nil
@@ -3829,7 +3911,7 @@ local function tryPlace(id, pos)
     local ok, res = invokeRet("spawn_unit", id, CFrame.new(pos))
     env.SatisHubAutoPlacing = nil
     -- Let client notifications arrive without spamming additional requests.
-    task.wait(0.25)
+    task.wait(0.12)
     if unitAtCap[id] then return false, "Unit placement limit reached" end
     if not ok then
         return false, "Remote failed or unavailable: " .. tostring(res)
@@ -3838,11 +3920,11 @@ local function tryPlace(id, pos)
         return false, "Server rejected placement"
     end
     if getUnitsFolder() then
-        for _ = 1, 20 do
+        for _ = 1, 9 do
             if not (alive() and state.randomPlace) then
                 return false, "Placement cancelled"
             end
-            task.wait(0.15)
+            task.wait(0.13)
             if unitAtCap[id] then return false, "Unit placement limit reached" end
             if #myUnits() > before then
                 addUnitId(id, true, true)
@@ -3956,7 +4038,7 @@ task.spawn(function()
 					idFails[id] = (idFails[id] or 0) + 1
                     -- Avoid retrying one failing unit endlessly. Do not permanently ban it.
                     if not unitAtCap[id] then
-                        idRetryAfter[id] = os.clock() + math.min(30, 4 * idFails[id])
+                        idRetryAfter[id] = os.clock() + math.min(12, 2 * idFails[id])
                     end
 					pendingBad[#pendingBad + 1] = { pos = pos, t = os.clock() }
 					if failStreak >= NO_MONEY_AFTER then
@@ -3969,7 +4051,7 @@ task.spawn(function()
 			end
 		end
 		-- when it keeps failing (probably no money) slow down
-		task.wait(PLACE_INTERVALO * ((failStreak >= NO_MONEY_AFTER) and 7 or 1))
+		task.wait(PLACE_INTERVALO * ((failStreak >= NO_MONEY_AFTER) and 5 or 1))
 	end
 end)
 
