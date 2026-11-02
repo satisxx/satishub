@@ -1724,7 +1724,7 @@ do
     version.Size = UDim2.fromOffset(83, 48)
     version.Position = UDim2.new(1, -96, 0, 0)
     version.BackgroundTransparency = 1
-    version.Text = "v3.9.1"
+    version.Text = "v3.9.2"
     version.Font = Enum.Font.GothamBold
     version.TextColor3 = Color3.fromRGB(208, 156, 255)
     version.TextSize = 15
@@ -3730,21 +3730,25 @@ do
     end
 end
 
--- ===== Auto Leave: victory/defeat or visible end screen =====
--- O evento pode chegar antes de o UI aparecer. Nunca repetir o remote automaticamente.
+-- ===== Auto Leave V3.9.2: bounded recovery for stuck result screens =====
+-- A finished match can leave InvokeServer pending (especially after repeated runs).
+-- Keep attempts bounded, and never call during an active match.
 local function startAutoLeave()
     local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui", 15)
-    local requested, pending, teleporting = false, false, false
-    local attemptCount = 0
-    local MAX_ATTEMPTS = 2
-    local RETRY_AFTER = 25
+    local teleporting = false
+    local finishing = false
+    local startedAt = 0
+    local attempts = 0
+    local firstPendingAt = nil
+    local lastAttemptAt = 0
+    local MAX_ATTEMPTS = 3
+    local RETRY_GAP = 20
 
-    -- A repeated execution of SatisHub uses a different RUN_ID, so older loops stop.
     pcall(function()
-        Players.LocalPlayer.OnTeleport:Connect(function(teleportState)
-            if teleportState == Enum.TeleportState.Started
-                or teleportState == Enum.TeleportState.InProgress then
+        Players.LocalPlayer.OnTeleport:Connect(function(phase)
+            if phase == Enum.TeleportState.Started or phase == Enum.TeleportState.InProgress then
                 teleporting = true
+                print("[SatisHub] Auto Leave: teleport started")
             end
         end)
     end)
@@ -3763,7 +3767,8 @@ local function startAutoLeave()
         if not playerGui then return false end
         local lobby, replay = false, false
         for _, obj in ipairs(playerGui:GetDescendants()) do
-            if obj:IsA("TextButton") and visible(obj) then
+            -- Some result GUIs use TextLabels inside image buttons.
+            if (obj:IsA("TextButton") or obj:IsA("TextLabel")) and visible(obj) then
                 local t = tostring(obj.Text):lower():gsub("%s+", " ")
                 if t:find("return to lobby", 1, true) then lobby = true end
                 if t == "replay" then replay = true end
@@ -3773,90 +3778,71 @@ local function startAutoLeave()
         return false
     end
 
-    local sendLobbyRequest
-    sendLobbyRequest = function(origin)
-        if not alive() or not state.autoLeave or teleporting or pending then return end
-        if attemptCount >= MAX_ATTEMPTS then return end
-        pending = true
+    local function beginEnding(reason)
+        if finishing or teleporting or not alive() or not state.autoLeave then return end
+        finishing = true
         matchEnding = true
-        attemptCount = attemptCount + 1
-        requested = true
-        local number = attemptCount
-        print(("[SatisHub] Auto Leave: request %d/%d (%s)"):format(number, MAX_ATTEMPTS, origin))
-
-        local remote = c2s and c2s:FindFirstChild("teleport_back_to_lobby")
-        if not remote or not remote:IsA("RemoteFunction") then
-            pending = false
-            warn("[SatisHub] Auto Leave: teleport_back_to_lobby unavailable")
-            return
-        end
-
-        -- InvokeServer can hang while the server handles a multiplayer vote.
-        -- Use a separate task and never issue overlapping calls.
-        local completed = false
-        task.spawn(function()
-            local ok, reply = pcall(function() return remote:InvokeServer() end)
-            completed = true
-            pending = false
-            if not alive() then return end
-            if not ok then
-                warn("[SatisHub] Auto Leave: server error: " .. tostring(reply))
-            elseif reply == false then
-                warn("[SatisHub] Auto Leave: server rejected request")
-            else
-                print("[SatisHub] Auto Leave: server reply: " .. tostring(reply))
-            end
-        end)
-
-        task.delay(RETRY_AFTER, function()
-            if not alive() or teleporting or not state.autoLeave then return end
-            if not endScreenShown() then return end
-            if not completed then
-                warn("[SatisHub] Auto Leave: InvokeServer still pending; no overlapping retry")
-                return
-            end
-            if number == 1 then
-                warn("[SatisHub] Auto Leave: still on results screen; attempting once more")
-                sendLobbyRequest("retry after 25s")
-            else
-                warn("[SatisHub] Auto Leave: still on results screen. Multiplayer may require all players to vote. Use Return to Lobby manually.")
-            end
-        end)
-    end
-
-    local function requestLobby(origin)
-        if requested or pending or teleporting or not alive() or not state.autoLeave then return end
-        requested = true
-        matchEnding = true
-        print("[SatisHub] Auto Leave: game end detected (" .. origin .. "); waiting 3s")
-        task.delay(3, function()
-            if not alive() or not state.autoLeave then
-                requested = false
-                matchEnding = false
-                return
-            end
-            sendLobbyRequest(origin)
-        end)
+        startedAt = os.clock()
+        print("[SatisHub] Auto Leave: results detected (" .. tostring(reason) .. ")")
     end
 
     local folder = endpoints and endpoints:FindFirstChild("server_to_client")
     local event = folder and folder:FindFirstChild("game_finished")
     if event and event:IsA("RemoteEvent") then
         event.OnClientEvent:Connect(function()
-            if state.autoLeave then requestLobby("game_finished") end
+            if alive() and state.autoLeave then beginEnding("game_finished") end
         end)
     else
-        warn("[SatisHub] Auto Leave: game_finished not found; using results GUI")
+        warn("[SatisHub] Auto Leave: waiting for results GUI (game_finished missing)")
+    end
+
+    local function attemptLeave()
+        attempts = attempts + 1
+        lastAttemptAt = os.clock()
+        local thisAttempt = attempts
+        local remoteFolder = ReplicatedStorage:FindFirstChild("endpoints")
+        remoteFolder = remoteFolder and remoteFolder:FindFirstChild("client_to_server")
+        local remote = remoteFolder and remoteFolder:FindFirstChild("teleport_back_to_lobby")
+        if not remote or not remote:IsA("RemoteFunction") then
+            warn("[SatisHub] Auto Leave: request " .. thisAttempt .. ": remote not available")
+            return
+        end
+        if not firstPendingAt then firstPendingAt = os.clock() end
+        print(("[SatisHub] Auto Leave: sending request %d/%d"):format(thisAttempt, MAX_ATTEMPTS))
+        task.spawn(function()
+            local ok, reply = pcall(function() return remote:InvokeServer() end)
+            if not alive() then return end
+            if ok then
+                print(("[SatisHub] Auto Leave: reply to request %d: %s"):format(thisAttempt, tostring(reply)))
+            else
+                warn(("[SatisHub] Auto Leave: request %d failed: %s"):format(thisAttempt, tostring(reply)))
+            end
+        end)
     end
 
     task.spawn(function()
         local seen = 0
         while alive() do
-            if state.autoLeave and not requested and not pending and not teleporting then
-                seen = endScreenShown() and (seen + 1) or 0
-                if seen >= 2 then requestLobby("results UI") end
-            else
+            if teleporting or not state.autoLeave then
                 seen = 0
+            else
+                local hasResults = endScreenShown()
+                seen = hasResults and (seen + 1) or 0
+                if not finishing and seen >= 2 then beginEnding("results GUI") end
+                if finishing and (os.clock() - startedAt) >= 3 then
+                    if attempts == 0 and hasResults then
+                        attemptLeave()
+                    elseif attempts > 0 and attempts < MAX_ATTEMPTS and hasResults
+                        and os.clock() - lastAttemptAt >= RETRY_GAP then
+                        warn("[SatisHub] Auto Leave: result screen still visible; limited retry")
+                        attemptLeave()
+                    elseif attempts == MAX_ATTEMPTS and hasResults
+                        and os.clock() - lastAttemptAt >= RETRY_GAP then
+                        warn("[SatisHub] Auto Leave: server has not teleported. Try Return to Lobby manually; further requests disabled.")
+                        -- Avoid repeating this warning indefinitely.
+                        lastAttemptAt = os.clock() + 999999
+                    end
+                end
             end
             task.wait(1.5)
         end
