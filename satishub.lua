@@ -2959,52 +2959,82 @@ refreshRgb()
 refreshTransparency()
 refreshTabs()
 
--- Loops
--- Pausa as automacoes assim que o fim da partida for identificado.
+-- ===== Anti-spam: votes and card selection =====
+-- These remotes were previously called every 1.5 seconds even if the game had
+-- already accepted the vote. Use a single start vote per activation and strict
+-- cooldowns for wave/card actions. Never issue these while leaving the match.
 local matchEnding = false
+local startVoted = false
+local cardNextAt = 0
+local skipNextAt = 0
+local replayVoted = false
+local CARD_COOLDOWN = 30
+local SKIP_COOLDOWN = 15
+
+-- Auto Start: once per activation. Switching OFF arms it for the next activation.
 task.spawn(function()
-	while alive() do
-		if state.autoStart and not matchEnding then
-			invoke("vote_start")
-		end
-		task.wait(INTERVALO)
-	end
+    while alive() do
+        if not state.autoStart then
+            startVoted = false
+        elseif not matchEnding and not startVoted then
+            startVoted = true
+            invoke("vote_start")
+            print("[SatisHub] Auto Start: sent once (anti-spam)")
+        end
+        task.wait(1)
+    end
 end)
 
--- Cards: random mode works on its own, fixed mode uses the "Card option" box
+-- Card selection: at most one request per 30 seconds. Never spam the server.
 task.spawn(function()
-	while alive() do
-		local opt
-		if state.randomCard then
-			opt = tostring(math.random(1, 3))
-		elseif state.autoCard then
-			opt = state.cardOption
-		end
-		if opt and not matchEnding then
-			invoke("select_roguelike_option", opt)
-		end
-		task.wait(INTERVALO)
-	end
+    while alive() do
+        local opt
+        if state.randomCard then
+            opt = tostring(math.random(1, 3))
+        elseif state.autoCard then
+            opt = tostring(state.cardOption)
+        end
+        if not opt then
+            cardNextAt = 0
+        elseif not matchEnding and os.clock() >= cardNextAt then
+            cardNextAt = os.clock() + CARD_COOLDOWN
+            invoke("select_roguelike_option", opt)
+        end
+        task.wait(1)
+    end
 end)
 
+-- Skip Wave: maximum one request every 15 seconds.
 task.spawn(function()
-	while alive() do
-		if state.autoSkip and not matchEnding then
-			invoke("vote_wave_skip")
-		end
-		task.wait(INTERVALO)
-	end
+    while alive() do
+        if not state.autoSkip then
+            skipNextAt = 0
+        elseif not matchEnding and os.clock() >= skipNextAt then
+            skipNextAt = os.clock() + SKIP_COOLDOWN
+            invoke("vote_wave_skip")
+        end
+        task.wait(1)
+    end
 end)
 
--- Replay vote when the game finishes
-task.spawn(function()
-	while alive() do
-		if state.autoReplay and not state.autoLeave and not matchEnding then
-			invoke("set_game_finished_vote", "replay")
-		end
-		task.wait(INTERVALO)
-	end
-end)
+-- Replay vote only when game_finished fires (if Auto Leave is disabled).
+-- This avoids casting a replay vote repeatedly during an active match.
+do
+    local s2cFolder = endpoints and endpoints:FindFirstChild("server_to_client")
+    local finishedRemote = s2cFolder and s2cFolder:FindFirstChild("game_finished")
+    if finishedRemote and finishedRemote:IsA("RemoteEvent") then
+        finishedRemote.OnClientEvent:Connect(function()
+            if alive() and state.autoReplay and not state.autoLeave and not replayVoted then
+                replayVoted = true
+                task.delay(2, function()
+                    if alive() and state.autoReplay and not state.autoLeave then
+                        invoke("set_game_finished_vote", "replay")
+                    end
+                end)
+            end
+        end)
+    end
+end
 
 -- ===== Auto Leave: victory/defeat or visible end screen =====
 -- O evento pode chegar antes de o UI aparecer. Nunca repetir o remote automaticamente.
