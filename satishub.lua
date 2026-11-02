@@ -688,21 +688,26 @@ if not fromQueue then
 		return l
 	end
 
-	nText("Important", 1, 20, WHITE, true)
+	nText("SatisHub - Early Version", 1, 20, WHITE, true)
 	nText(
-		'To make "Auto Execute On Teleport" work, save this script as "' .. SCRIPT_FILE .. '" in your executor\'s workspace folder.',
+		"SatisHub is a new script developed and maintained by just one person.",
 		2,
 		14,
 		Color3.fromRGB(230, 230, 230),
 		false
 	)
-	nText("Without it, the script will not run again after you change server.", 3, 12, Color3.fromRGB(160, 160, 170), false)
-	nText(autoExecStatus, 4, 11, Color3.fromRGB(160, 160, 170), false)
+	nText(
+		"Some features may have bugs, unexpected behavior, or compatibility issues. Thank you for your patience while the script is improved!",
+		3,
+		12,
+		Color3.fromRGB(175, 175, 185),
+		false
+	)
 
 	local nBtn = Instance.new("TextButton")
 	nBtn.Size = UDim2.new(1, 0, 0, 36)
 	nBtn.BackgroundColor3 = currentTheme:Lerp(WHITE, 0.14)
-	nBtn.Text = "Understood"
+	nBtn.Text = "Continue"
 	nBtn.TextColor3 = WHITE
 	nBtn.Font = Enum.Font.GothamBold
 	nBtn.TextSize = 14
