@@ -69,6 +69,9 @@ local state = {
 	randomCard = false,
 	autoJoinEvent = false,
 	autoJoinDailyChallenge = false,
+    dailyResetAt = 0,
+    dailyCompletedResetAt = 0,
+    dailyJoinPending = false,
 	randomPlace = false,
 	placeRadius = "15",
 	unitIds = "",
@@ -83,6 +86,7 @@ local state = {
 	savedKey = "",
 	rgbEnabled = true,
 	themeColor = "",
+    farmingStats = {wins = 0, losses = 0, games = 0, gold = 0, gems = 0, xp = 0, seconds = 0},
 }
 
 -- ===== Anti-AFK: only acts when Roblox fires the local idle event =====
@@ -138,6 +142,99 @@ local function loadSettings()
 end
 
 loadSettings()
+
+-- ===== Daily Challenge: server-driven countdown and one completion per reset =====
+-- The event provides seconds REMAINING; do NOT firesignal it (that only fakes client state).
+-- Keep one table in the main chunk to avoid Luau's 200-local-register limit.
+local dailyChallenge = {}
+do
+    local PERIOD = 24 * 60 * 60
+    local function now() return os.time() end
+    local function resetExpiry()
+        local deadline = tonumber(state.dailyResetAt) or 0
+        if deadline <= 0 then return 0 end
+        if now() >= deadline then
+            -- Predict the next reset in 24-hour increments if no new server event arrived.
+            deadline = deadline + (math.floor((now() - deadline) / PERIOD) + 1) * PERIOD
+            state.dailyResetAt = deadline
+            state.dailyCompletedResetAt = 0
+            state.dailyJoinPending = false
+            saveSettings()
+        end
+        return deadline
+    end
+    function dailyChallenge.remaining()
+        local deadline = resetExpiry()
+        return deadline > 0 and math.max(0, deadline - now()) or nil
+    end
+    function dailyChallenge.completed()
+        local deadline = resetExpiry()
+        return deadline > 0 and (tonumber(state.dailyCompletedResetAt) or 0) == deadline
+    end
+    function dailyChallenge.canJoin()
+        return not dailyChallenge.completed()
+    end
+    function dailyChallenge.markFinished()
+        -- Only lock a daily run requested by this script (not unrelated normal matches).
+        if not state.dailyJoinPending then return end
+        local deadline = resetExpiry()
+        if deadline <= 0 then
+            -- If the countdown hasn't arrived, start a conservative 24h lock;
+            -- a later authoritative server countdown replaces this estimate.
+            deadline = now() + PERIOD
+            state.dailyResetAt = deadline
+        end
+        state.dailyCompletedResetAt = deadline
+        state.dailyJoinPending = false
+        saveSettings()
+        print('[SatisHub] Daily Challenge completed; Auto Join blocked until reset.')
+    end
+    function dailyChallenge.requested()
+        state.dailyJoinPending = true
+        saveSettings()
+    end
+    local serverEvents = endpoints and endpoints:FindFirstChild('server_to_client')
+    local timerEvent = serverEvents and serverEvents:FindFirstChild('daily_challenge_remaining_time_changed')
+    if timerEvent and timerEvent:IsA('RemoteEvent') then
+        timerEvent.OnClientEvent:Connect(function(seconds)
+            if not alive() then return end
+            local remaining = tonumber(seconds)
+            if not remaining or remaining < 0 or remaining > PERIOD + 300 then return end
+            local oldDeadline = tonumber(state.dailyResetAt) or 0
+            local newDeadline = now() + math.floor(remaining)
+            -- Ignore minor drift but accept an actual reset/window change.
+            if oldDeadline > 0 and math.abs(newDeadline - oldDeadline) <= 90 then
+                return
+            end
+            state.dailyResetAt = newDeadline
+            -- Transfer a completion lock when the same reset deadline is resynchronized.
+            if oldDeadline > 0 and (tonumber(state.dailyCompletedResetAt) or 0) == oldDeadline
+                and math.abs(newDeadline - oldDeadline) <= 300 then
+                state.dailyCompletedResetAt = newDeadline
+            elseif oldDeadline == 0 then
+                state.dailyCompletedResetAt = 0
+                state.dailyJoinPending = false
+            elseif newDeadline > oldDeadline + 300 then
+                -- The server moved the deadline forward: a new daily cycle.
+                state.dailyCompletedResetAt = 0
+                state.dailyJoinPending = false
+            elseif (tonumber(state.dailyCompletedResetAt) or 0) == oldDeadline then
+                -- A late first server sync may correct the estimated reset time;
+                -- do not accidentally unlock a challenge that was just completed.
+                state.dailyCompletedResetAt = newDeadline
+            end
+            saveSettings()
+        end)
+    else
+        warn('[SatisHub] Daily Challenge timer event unavailable; using last saved reset.')
+    end
+    local finish = serverEvents and serverEvents:FindFirstChild('game_finished')
+    if finish and finish:IsA('RemoteEvent') then
+        finish.OnClientEvent:Connect(function()
+            if alive() then dailyChallenge.markFinished() end
+        end)
+    end
+end
 
 -- Started by a queued teleport (auto execute)?
 local fromQueue = env.SatisHubFromQueue and true or false
@@ -595,6 +692,157 @@ black.BackgroundColor3 = Color3.new(0, 0, 0)
 black.BorderSizePixel = 0
 black.Visible = false
 black.Parent = blackGui
+
+
+-- Farming Stats dashboard and reversible low-graphics mode.
+-- Kept inside a function so this large script does not exceed Luau's local-register limit.
+local function initFarmingDashboard()
+    local stats = state.farmingStats
+    if type(stats) ~= "table" then stats = {} end
+    for _, key in ipairs({"wins", "losses", "games", "gold", "gems", "xp", "seconds"}) do
+        stats[key] = tonumber(stats[key]) or 0
+    end
+    state.farmingStats = stats
+    local started = os.clock()
+    local lastFlush = started
+    local finished = false
+    local statsGui = Instance.new("ScreenGui")
+    statsGui.Name = "SatisHubFarmingStats"
+    statsGui.ResetOnSpawn = false
+    statsGui.IgnoreGuiInset = true
+    statsGui.DisplayOrder = 7 -- higher than the black screen, lower than SatisHub controls
+    statsGui.Enabled = false
+    statsGui.Parent = parent
+
+    local panel = Instance.new("Frame")
+    panel.AnchorPoint = Vector2.new(0.5, 0.5)
+    panel.Position = UDim2.fromScale(0.5, 0.5)
+    panel.Size = UDim2.fromOffset(340, 295)
+    panel.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    panel.BorderSizePixel = 0
+    panel.Parent = statsGui
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+    local outline = Instance.new("UIStroke", panel)
+    outline.Color = Color3.fromRGB(75, 75, 90)
+    outline.Thickness = 1.5
+    local layout = Instance.new("UIListLayout", panel)
+    layout.Padding = UDim.new(0, 9)
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    local pad = Instance.new("UIPadding", panel)
+    pad.PaddingTop = UDim.new(0, 18)
+    pad.PaddingLeft = UDim.new(0, 16)
+    pad.PaddingRight = UDim.new(0, 16)
+    local function label(text, order, size, color)
+        local line = Instance.new("TextLabel")
+        line.LayoutOrder = order
+        line.Size = UDim2.new(1, 0, 0, 25)
+        line.BackgroundTransparency = 1
+        line.Text = text
+        line.TextColor3 = color or Color3.fromRGB(230, 230, 230)
+        line.Font = Enum.Font.GothamBold
+        line.TextSize = size or 16
+        line.TextXAlignment = Enum.TextXAlignment.Center
+        line.Parent = panel
+        return line
+    end
+    label("SATISHUB  |  FARMING STATS", 1, 19, Color3.fromRGB(100, 220, 165))
+    local uptime = label("Farming time: 00:00:00", 2)
+    local games = label("Games: 0   |   Wins: 0   |   Losses: 0", 3)
+    local rewards = label("Gold: 0   |   Gems: 0", 4)
+    local experience = label("XP: 0", 5)
+    label("FPS Boost active - 3D rendering disabled", 6, 11, Color3.fromRGB(165, 165, 180))
+    label("Use your minimize key to open SatisHub", 7, 11, Color3.fromRGB(165, 165, 180))
+
+    local function elapsed()
+        return math.max(0, math.floor(os.clock() - started))
+    end
+    local function display()
+        local secs = stats.seconds + elapsed()
+        uptime.Text = ("Farming time: %02d:%02d:%02d"):format(math.floor(secs/3600), math.floor(secs/60)%60, secs%60)
+        games.Text = ("Games: %d   |   Wins: %d   |   Losses: %d"):format(stats.games, stats.wins, stats.losses)
+        rewards.Text = ("Gold: %d   |   Gems: %d"):format(stats.gold, stats.gems)
+        experience.Text = ("XP: %d"):format(stats.xp)
+    end
+    local folder = endpoints and endpoints:FindFirstChild("server_to_client")
+    local finishedEvent = folder and folder:FindFirstChild("game_finished")
+    if finishedEvent and finishedEvent:IsA("RemoteEvent") then
+        finishedEvent.OnClientEvent:Connect(function(data)
+            if not alive() or finished then return end
+            if type(data) ~= "table" then return end
+            finished = true
+            stats.games = stats.games + 1
+            if data.victory == true then stats.wins = stats.wins + 1 else stats.losses = stats.losses + 1 end
+            stats.gold = stats.gold + (tonumber(data.gold_reward) or 0)
+            stats.gems = stats.gems + (tonumber(data.gem_reward) or 0)
+            stats.xp = stats.xp + (tonumber(data.xp_reward) or 0)
+            -- Commit elapsed time once, so teleport auto-exec doesn't reset the timer.
+            stats.seconds = stats.seconds + elapsed()
+            started = os.clock()
+            saveSettings()
+            display()
+        end)
+    end
+    task.spawn(function()
+        while alive() do
+            display()
+            if os.clock() - lastFlush >= 30 then
+                stats.seconds = stats.seconds + elapsed()
+                started = os.clock()
+                lastFlush = os.clock()
+                saveSettings()
+            end
+            task.wait(1)
+        end
+    end)
+
+    local lighting = game:GetService("Lighting")
+    local oldGraphics = {}
+    local applied = false
+    local function setLowGraphics(enabled)
+        if enabled == applied then return end
+        applied = enabled
+        if enabled then
+            -- Snapshot only values we modify, so OFF restores original graphics.
+            local ok, shadows = pcall(function() return lighting.GlobalShadows end)
+            if ok then
+                oldGraphics.shadows = shadows
+                pcall(function() lighting.GlobalShadows = false end)
+            end
+            oldGraphics.effects = {}
+            for _, inst in ipairs(lighting:GetChildren()) do
+                if inst:IsA("PostEffect") then
+                    local ok2, value = pcall(function() return inst.Enabled end)
+                    if ok2 then
+                        table.insert(oldGraphics.effects, {instance = inst, enabled = value})
+                        pcall(function() inst.Enabled = false end)
+                    end
+                end
+            end
+        else
+            if oldGraphics.shadows ~= nil then
+                pcall(function() lighting.GlobalShadows = oldGraphics.shadows end)
+            end
+            for _, item in ipairs(oldGraphics.effects or {}) do
+                if item.instance and item.instance.Parent then
+                    pcall(function() item.instance.Enabled = item.enabled end)
+                end
+            end
+            oldGraphics = {}
+        end
+    end
+    return function(enabled)
+        statsGui.Enabled = enabled
+        setLowGraphics(enabled)
+        black.Visible = enabled
+        local ok, err = pcall(function()
+            RunService:Set3dRenderingEnabled(not enabled)
+        end)
+        if not ok then warn("[SatisHub] FPS Boost: " .. tostring(err)) end
+        if enabled then display() end
+    end
+end
+local setFpsBoost = initFarmingDashboard()
 
 -- Main GUI container
 local gui = Instance.new("ScreenGui")
@@ -1231,6 +1479,24 @@ do
         state.autoJoinDailyChallenge = v
         -- If both modes are enabled, Daily Challenge takes priority.
     end, state.autoJoinDailyChallenge)
+    local dailyStatus = makeLabel(mainPage, 'Daily reset: syncing with server...', 3.7)
+    dailyStatus.TextWrapped = true
+    dailyStatus.Size = UDim2.new(1, -20, 0, 26)
+    task.spawn(function()
+        while alive() do
+            local rem = dailyChallenge.remaining()
+            if rem then
+                local h = math.floor(rem / 3600)
+                local m = math.floor(rem / 60) % 60
+                local sec = rem % 60
+                dailyStatus.Text = ('Daily reset: %02d:%02d:%02d | %s'):format(
+                    h, m, sec, dailyChallenge.completed() and 'COMPLETED' or 'AVAILABLE')
+            else
+                dailyStatus.Text = 'Daily reset: waiting for server countdown...'
+            end
+            task.wait(1)
+        end
+    end)
 end
 
 -- Auto Select Card and Random Card are mutually exclusive:
@@ -2422,10 +2688,7 @@ local settingsPage = makePage(body, 4)
 settingsPage.Visible = false
 
 makeToggle(settingsPage, "FPS BOOST", 0, function(v)
-	black.Visible = v
-	pcall(function()
-		RunService:Set3dRenderingEnabled(not v)
-	end)
+    setFpsBoost(v)
 end)
 
 
@@ -3597,7 +3860,7 @@ task.spawn(function()
     local autoJoinRequested = false
     local autoJoinBusy = false
 	while alive() do
-		if not state.autoJoinEvent or state.autoJoinDailyChallenge then
+		if not state.autoJoinEvent or (state.autoJoinDailyChallenge and dailyChallenge.canJoin()) then
 			autoJoinRequested = false
 		elseif not matchEnding and not autoJoinRequested and not autoJoinBusy then
 			autoJoinRequested = true
@@ -3621,12 +3884,15 @@ local function runDailyChallengeJoin()
     while alive() do
         if not state.autoJoinDailyChallenge then
             requested = false
+        elseif not dailyChallenge.canJoin() then
+            requested = false -- Daily was completed; wait for the next reset.
         elseif not requested and not matchEnding then
             requested = true
             local ok, result = invokeRet("request_matchmaking", "__DAILY_CHALLENGE")
-            if not ok then
-                warn("[SatisHub] Daily Challenge: matchmaking request failed: " .. tostring(result))
+            if not ok or result == false then
+                warn("[SatisHub] Daily Challenge: matchmaking failed: " .. tostring(result))
             else
+                dailyChallenge.requested()
                 print("[SatisHub] Daily Challenge: matchmaking requested; waiting for server.")
             end
         end
