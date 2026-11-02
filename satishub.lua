@@ -151,89 +151,110 @@ end
 
 loadSettings()
 
--- ===== Daily Challenge: reset countdown + completion lock =====
--- Completion is stored independently so a late timer sync cannot erase it.
+-- ===== Daily Challenge: global reset at 00:00 Europe/Lisbon =====
+-- Europe/Lisbon observes GMT in winter and GMT+1 during summer time.
+-- Every player uses the same absolute Unix reset timestamp, regardless of device timezone.
 local dailyChallenge = {}
 do
-    local PERIOD = 86400
     local function now() return os.time() end
-    local function deadline()
-        local t = tonumber(state.dailyResetAt) or 0
-        if t > 0 and now() >= t then
-            t = t + (math.floor((now() - t) / PERIOD) + 1) * PERIOD
-            state.dailyResetAt = t
-            if (tonumber(state.dailyLockUntil) or 0) <= now() then
+    local function isLisbonDST(ts)
+        local d = os.date("!*t", ts)
+        local month, day, hour = d.month, d.day, d.hour
+        if month < 3 or month > 10 then return false end
+        if month > 3 and month < 10 then return true end
+        -- EU clock changes occur at 01:00 UTC on the LAST Sunday of March/October.
+        local on31 = os.date("!*t", ts + (31 - day) * 86400)
+        local lastSunday = 31 - (on31.wday - 1)
+        if month == 3 then
+            return day > lastSunday or (day == lastSunday and hour >= 1)
+        end
+        return day < lastSunday or (day == lastSunday and hour < 1)
+    end
+    local function nextResetAt(ts)
+        -- First estimate next local midnight using the offset at the current instant.
+        local offsetNow = isLisbonDST(ts) and 3600 or 0
+        local secondsIntoDay = (ts + offsetNow) % 86400
+        local estimate = ts + (86400 - secondsIntoDay)
+        -- A DST switch near midnight can shift the target by one hour.
+        local best
+        for delta = -3600, 3600, 3600 do
+            local candidate = estimate + delta
+            local offsetAtCandidate = isLisbonDST(candidate) and 3600 or 0
+            if candidate > ts and (candidate + offsetAtCandidate) % 86400 == 0 then
+                if not best or candidate < best then best = candidate end
+            end
+        end
+        return best or estimate
+    end
+    local function refreshReset()
+        local current = now()
+        local target = nextResetAt(current)
+        local oldTarget = tonumber(state.dailyResetAt) or 0
+        local oldLock = tonumber(state.dailyLockUntil) or 0
+        -- Preserve completion only if it was locked for a period that has not ended.
+        -- Earlier versions could store an incorrect long future deadline.
+        if oldLock > current then
+            if oldTarget > 0 and oldTarget <= current then
                 state.dailyLockUntil = 0
                 state.dailyCompletedResetAt = 0
                 state.dailyJoinPending = false
+            else
+                state.dailyLockUntil = target
+                state.dailyCompletedResetAt = target
             end
+        elseif oldLock ~= 0 then
+            state.dailyLockUntil = 0
+            state.dailyCompletedResetAt = 0
+            state.dailyJoinPending = false
+        end
+        if oldTarget ~= target then
+            state.dailyResetAt = target
             saveSettings()
         end
-        return t
+        return target
     end
     function dailyChallenge.remaining()
-        local t = deadline()
-        return t > 0 and math.max(0, t - now()) or nil
+        return math.max(0, refreshReset() - now())
     end
     function dailyChallenge.completed()
+        refreshReset()
         return (tonumber(state.dailyLockUntil) or 0) > now()
     end
     function dailyChallenge.canJoin()
         return not dailyChallenge.completed()
     end
     function dailyChallenge.markFinished()
-        if not state.dailyJoinPending then return end
-        dailyChallenge.markCompleted('game_finished')
+        if state.dailyJoinPending then
+            dailyChallenge.markCompleted('game_finished')
+        end
     end
     function dailyChallenge.markCompleted(reason)
-        local t = deadline()
-        if t <= now() then t = now() + PERIOD end
-        state.dailyResetAt = t
-        state.dailyLockUntil = t
-        state.dailyCompletedResetAt = t
+        local target = refreshReset()
+        state.dailyResetAt = target
+        state.dailyLockUntil = target
+        state.dailyCompletedResetAt = target
         state.dailyJoinPending = false
         saveSettings()
-        print('[SatisHub] Daily Challenge: COMPLETED (' .. tostring(reason) .. '); locked until daily reset.')
+        print('[SatisHub] Daily Challenge COMPLETED (' .. tostring(reason) .. ') until next Lisbon midnight UTC timestamp ' .. tostring(target))
     end
     function dailyChallenge.requested()
         state.dailyJoinPending = true
         saveSettings()
     end
+    -- Listen for server timer for diagnostics only: the requested reset is
+    -- the shared 00:00 Europe/Lisbon instant, not a sliding 24h estimate.
     local serverEvents = endpoints and endpoints:FindFirstChild('server_to_client')
-    local function onCountdown(seconds)
-        if not alive() then return end
-        local remaining = tonumber(seconds)
-        if not remaining or remaining < 0 or remaining > PERIOD + 300 then return end
-        local old = tonumber(state.dailyResetAt) or 0
-        local fresh = now() + math.floor(remaining)
-        if old > 0 and math.abs(fresh - old) < 90 then return end
-        local locked = dailyChallenge.completed()
-        local oldLock = tonumber(state.dailyLockUntil) or 0
-        state.dailyResetAt = fresh
-        if locked then
-            -- Correct an estimated deadline without losing the completion lock.
-            -- Only unlock after an actual new day has begun.
-            if old > 0 and now() >= old and fresh > old + 300 then
-                state.dailyLockUntil = 0
-                state.dailyCompletedResetAt = 0
-            else
-                state.dailyLockUntil = fresh
-                state.dailyCompletedResetAt = fresh
-            end
-        elseif oldLock > 0 and oldLock <= now() then
-            state.dailyLockUntil = 0
-            state.dailyCompletedResetAt = 0
-        end
-        saveSettings()
-        print('[SatisHub] Daily countdown synced: ' .. tostring(math.floor(remaining)) .. 's remaining')
-    end
     task.spawn(function()
         if not serverEvents then return end
         local ev = serverEvents:WaitForChild('daily_challenge_remaining_time_changed', 30)
         if ev and ev:IsA('RemoteEvent') then
-            ev.OnClientEvent:Connect(onCountdown)
-        else
-            warn('[SatisHub] Daily countdown signal missing; waiting for a future sync.')
+            ev.OnClientEvent:Connect(function(seconds)
+                if not alive() then return end
+                local serverRemaining = tonumber(seconds)
+                if serverRemaining and math.abs(serverRemaining - dailyChallenge.remaining()) > 180 then
+                    warn('[SatisHub] Daily server countdown differs from configured 00:00 Lisbon reset by over 3 minutes: ' .. tostring(serverRemaining))
+                end
+            end)
         end
     end)
     task.spawn(function()
@@ -245,6 +266,7 @@ do
             end)
         end
     end)
+    refreshReset()
 end
 
 -- Started by a queued teleport (auto execute)?
@@ -1501,7 +1523,27 @@ caixaKey.LayoutOrder = 1
 
 local botaoKey = makeButton(keyPage, "Verify", 2)
 
-local msgKey = makeLabel(keyPage, "", 3)
+-- Copies the official SatisHub Discord invite when the user requests a key.
+local getKeyButton = makeButton(keyPage, "Get Key", 3)
+getKeyButton.MouseButton1Click:Connect(function()
+    local url = "https://discord.gg/WvCUTSDSNT"
+    local copy = setclipboard or toclipboard
+    if type(copy) ~= "function" then
+        warn("[SatisHub] Clipboard is not supported by this executor")
+        return
+    end
+    local ok, err = pcall(copy, url)
+    if ok then
+        getKeyButton.Text = "Link Copied!"
+        task.delay(2, function()
+            if getKeyButton.Parent then getKeyButton.Text = "Get Key" end
+        end)
+    else
+        warn("[SatisHub] Clipboard error: " .. tostring(err))
+    end
+end)
+
+local msgKey = makeLabel(keyPage, "", 4)
 msgKey.TextColor3 = ERROR_COLOR
 msgKey.TextXAlignment = Enum.TextXAlignment.Center
 
@@ -1625,7 +1667,7 @@ do
         dailyChallenge.markCompleted('manual')
         dailyLockButton.Text = "Daily Completed - Locked"
     end)
-    local dailyStatus = makeLabel(mainPage, 'Daily reset: syncing with server...', 3.7)
+    local dailyStatus = makeLabel(mainPage, 'Daily reset (Lisbon 00:00): calculating...', 3.7)
     dailyStatus.TextWrapped = true
     dailyStatus.Size = UDim2.new(1, -20, 0, 26)
     task.spawn(function()
@@ -1635,10 +1677,10 @@ do
                 local h = math.floor(rem / 3600)
                 local m = math.floor(rem / 60) % 60
                 local sec = rem % 60
-                dailyStatus.Text = ('Daily reset: %02d:%02d:%02d | %s'):format(
+                dailyStatus.Text = ('Daily reset (Lisbon): %02d:%02d:%02d | %s'):format(
                     h, m, sec, dailyChallenge.completed() and 'COMPLETED' or 'AVAILABLE')
             else
-                dailyStatus.Text = dailyChallenge.completed() and 'Daily: COMPLETED | timer awaiting server' or 'Daily reset: waiting for server countdown...'
+                dailyStatus.Text = dailyChallenge.completed() and 'Daily: COMPLETED | timer awaiting server' or 'Daily reset (Lisbon): calculating...'
             end
             dailyLockButton.Text = dailyChallenge.completed() and 'Daily Completed - Locked' or 'Mark Daily Completed'
             task.wait(1)
