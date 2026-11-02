@@ -56,7 +56,7 @@ local JOIN_INTERVALO = 5
 -- Fixed access key (letters and numbers). Change it here whenever you want.
 local KEY = "YJ9IWS8WHFUS6RZZZC73"
 -- Change KEY_AUTH_VERSION whenever you publish a new SatisHub version.
-local KEY_AUTH_VERSION = "SatisHub-V3.3-Key24h"
+local KEY_AUTH_VERSION = "SatisHub-V3.7-AnimePurple"
 local KEY_SESSION_SECONDS = 24 * 60 * 60
 
 local function normalizeKey(s)
@@ -281,7 +281,7 @@ end
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-2026-11-01-no-hide-messages"
+local SCRIPT_BUILD = "SatisHub-V3.7-AnimePurple"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -631,10 +631,10 @@ queueSelf()
 
 -- ===== Look =====
 -- Black background (changeable in Settings), grey controls, RGB borders. Green only means "ON".
-local ON_COLOR = Color3.fromRGB(0, 170, 100)
+local ON_COLOR = Color3.fromRGB(145, 38, 245)
 local ERROR_COLOR = Color3.fromRGB(240, 70, 70)
-local OFF_STROKE = Color3.fromRGB(45, 59, 82)
-local DEFAULT_THEME = Color3.fromRGB(11, 14, 23)
+local OFF_STROKE = Color3.fromRGB(86, 43, 127)
+local DEFAULT_THEME = Color3.fromRGB(15, 5, 29)
 local WHITE = Color3.new(1, 1, 1)
 
 -- RGB palette (first and last colors match so the rotation loops smoothly)
@@ -649,15 +649,8 @@ local RAINBOW = ColorSequence.new({
 })
 
 local currentTheme = DEFAULT_THEME
-do
-	local hex = tostring(state.themeColor or "")
-	if hex ~= "" then
-		local okC, c = pcall(Color3.fromHex, hex)
-		if okC and c then
-			currentTheme = c
-		end
-	end
-end
+-- V3.7 defaults to the purple theme irrespective of old saved V3 blue colors.
+-- The Settings palette still allows manual recoloring in the current session.
 
 -- Icon image (embedded, shown when the hub is minimized)
 local ICON_B64 = "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"
@@ -686,6 +679,22 @@ local function b64decode(data)
 		end
 	end
 	return table.concat(out)
+end
+
+-- Embedded Anime Purple / Meliodas banner from the supplied visual reference.
+-- No external image URL or Roblox asset upload is needed.
+local ANIME_PURPLE_BANNER_B64 = "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"
+local function loadAnimePurpleBanner()
+    if type(writefile) ~= "function" then return nil end
+    local getAsset = getcustomasset or getsynasset
+    if type(getAsset) ~= "function" then return nil end
+    local ok, asset = pcall(function()
+        local name = "satishub_anime_purple_v37.jpg"
+        writefile(name, b64decode(ANIME_PURPLE_BANNER_B64))
+        return getAsset(name)
+    end)
+    if ok then return asset end
+    return nil
 end
 
 local function loadIcon()
@@ -760,7 +769,7 @@ local function initFarmingDashboard()
     panel.AnchorPoint = Vector2.new(0.5, 0.5)
     panel.Position = UDim2.fromScale(0.5, 0.5)
     panel.Size = UDim2.fromOffset(340, 295)
-    panel.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    panel.BackgroundColor3 = Color3.fromRGB(18, 5, 33)
     panel.BorderSizePixel = 0
     panel.Parent = statsGui
     Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
@@ -773,7 +782,7 @@ local function initFarmingDashboard()
     closeStats.Font = Enum.Font.GothamBold
     closeStats.TextSize = 14
     closeStats.TextColor3 = Color3.fromRGB(255, 255, 255)
-    closeStats.BackgroundColor3 = Color3.fromRGB(125, 40, 50)
+    closeStats.BackgroundColor3 = Color3.fromRGB(84, 29, 121)
     closeStats.BorderSizePixel = 0
     closeStats.ZIndex = 12
     closeStats.Parent = panel
@@ -782,8 +791,8 @@ local function initFarmingDashboard()
         if disableFromStats then disableFromStats() end
     end)
     local outline = Instance.new("UIStroke", panel)
-    outline.Color = Color3.fromRGB(75, 75, 90)
-    outline.Thickness = 1.5
+    outline.Color = Color3.fromRGB(181, 63, 255)
+    outline.Thickness = 2
     local layout = Instance.new("UIListLayout", panel)
     layout.Padding = UDim.new(0, 9)
     layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
@@ -805,7 +814,7 @@ local function initFarmingDashboard()
         line.Parent = panel
         return line
     end
-    label("SATISHUB  |  FARMING STATS", 1, 19, Color3.fromRGB(100, 220, 165))
+    label("SATISHUB  |  FARMING STATS", 1, 19, Color3.fromRGB(220, 152, 255))
     local uptime = label("Farming time: 00:00:00", 2)
     local games = label("Games: 0   |   Wins: 0   |   Losses: 0", 3)
     local rewards = label("Gold: 0   |   Gems: 0", 4)
@@ -1049,9 +1058,9 @@ local function showFirstKeyNotice()
 end
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(320, 0)
+frame.Size = UDim2.fromOffset(430, 0)
 frame.AutomaticSize = Enum.AutomaticSize.Y
-frame.Position = UDim2.new(0, 20, 0.5, -120)
+frame.Position = UDim2.new(0, 32, 0.5, -320)
 frame.BackgroundColor3 = currentTheme
 frame.BorderSizePixel = 0
 frame.ClipsDescendants = true
@@ -1064,16 +1073,17 @@ do
     panelGradient.Name = "SatisV31PanelGradient"
     panelGradient.Rotation = 90
     panelGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(17, 27, 47)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 12, 22))
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(27, 8, 49)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 3, 20))
     })
     panelGradient.Parent = frame
 end
-addRgbStroke(frame, 2)
 do
     local st = Instance.new("UIStroke")
-    st.Color = Color3.fromRGB(45, 62, 91)
-    st.Thickness = 1
+    st.Name = "AnimePurpleOuterGlow"
+    st.Color = Color3.fromRGB(175, 64, 255)
+    st.Thickness = 2.1
+    st.Transparency = 0.04
     st.Parent = frame
 end
 
@@ -1092,7 +1102,7 @@ local gameHeader
 local refreshTabs
 
 local function btnColor()
-	return currentTheme:Lerp(Color3.fromRGB(74, 96, 139), 0.27)
+	return Color3.fromRGB(39, 16, 65)
 end
 
 local function applyTheme(c)
@@ -1111,7 +1121,7 @@ local function applyTheme(c)
 		gameHeader.BackgroundColor3 = c:Lerp(Color3.new(0, 0, 0), 0.3)
 	end
 	for _, o in ipairs(fields) do
-		o.BackgroundColor3 = c:Lerp(WHITE, 0.12)
+		o.BackgroundColor3 = Color3.fromRGB(45, 18, 69)
 	end
 	for _, b in ipairs(plainButtons) do
 		b.BackgroundColor3 = btnColor()
@@ -1161,17 +1171,17 @@ end
 -- Flat button with a thin border. rgb = true gives it an RGB border (used by toggles when ON).
 local function makeButton(parentObj, text, order, rgb)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(1, -24, 0, 36)
+	b.Size = UDim2.new(1, -24, 0, 44)
 	b.BackgroundColor3 = btnColor()
 	b.Text = text
 	b.TextColor3 = WHITE
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 12
+	b.TextSize = 14
 	b.BorderSizePixel = 0
 	b.AutoButtonColor = false
 	b.LayoutOrder = order or 0
 	b.Parent = parentObj
-	corner(b, 10)
+	corner(b, 13)
 
 	local stroke, grad
 	if rgb then
@@ -1209,7 +1219,7 @@ local function makeButton(parentObj, text, order, rgb)
     -- Narrow highlight on hover, without changing functional ON/OFF colors.
     local hoverStroke = Instance.new("UIStroke")
     hoverStroke.Name = "SatisV31HoverStroke"
-    hoverStroke.Color = Color3.fromRGB(113, 175, 255)
+    hoverStroke.Color = Color3.fromRGB(188, 78, 255)
     hoverStroke.Thickness = 1
     hoverStroke.Transparency = 1
     hoverStroke.Parent = b
@@ -1224,35 +1234,91 @@ end
 
 -- Returns the button and a setter (set(true/false)) so toggles can control each other.
 -- "initial" restores the saved value; every change is saved to file.
+-- Anime Purple row-style toggles: keep original state, storage, and callbacks.
 local function makeToggle(parentObj, name, order, onChange, initial)
-	local on = false
-	local b, stroke, grad = makeButton(parentObj, name .. ": OFF", order, true)
+    local on = false
+    local b, stroke, grad = makeButton(parentObj, "", order, true)
+    b.Text = ""
+    b.Size = UDim2.new(1, -28, 0, 48)
+    b.BackgroundColor3 = Color3.fromRGB(28, 12, 48)
+    stroke.Color = Color3.fromRGB(91, 40, 137)
+    stroke.Thickness = 1.1
+    grad.Enabled = false
 
-	local function paint()
-		b.Text = name .. (on and ": ON" or ": OFF")
-		if name == "Auto Join Event" then
-			b.BackgroundColor3 = on and Color3.fromRGB(255, 140, 25) or Color3.fromRGB(135, 72, 16)
-		else
-			b.BackgroundColor3 = on and ON_COLOR or btnColor()
-		end
-		stroke.Color = on and WHITE or OFF_STROKE
-		grad.Enabled = on and state.rgbEnabled
-	end
-	toggleRefreshers[#toggleRefreshers + 1] = paint
+    local symbol = Instance.new("TextLabel")
+    symbol.Name = "PurpleSymbol"
+    symbol.Size = UDim2.fromOffset(28, 30)
+    symbol.Position = UDim2.new(0, 13, 0.5, -15)
+    symbol.BackgroundTransparency = 1
+    symbol.Text = "✦"
+    symbol.Font = Enum.Font.GothamBold
+    symbol.TextSize = 24
+    symbol.TextColor3 = Color3.fromRGB(188, 79, 255)
+    symbol.Parent = b
 
-	local function set(v)
-		on = v
-		paint()
-		onChange(on)
-		saveSettings()
-	end
-	b.MouseButton1Click:Connect(function()
-		set(not on)
-	end)
-	if initial then
-		set(true)
-	end
-	return b, set
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "OptionName"
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Position = UDim2.new(0, 47, 0, 0)
+    nameLabel.Size = UDim2.new(1, -132, 1, 0)
+    nameLabel.Font = Enum.Font.GothamMedium
+    nameLabel.TextSize = 13
+    nameLabel.TextColor3 = Color3.fromRGB(239, 231, 252)
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLabel.Text = name
+    nameLabel.Parent = b
+
+    local switch = Instance.new("Frame")
+    switch.Name = "AnimeSwitch"
+    switch.AnchorPoint = Vector2.new(1, 0.5)
+    switch.Position = UDim2.new(1, -14, 0.5, 0)
+    switch.Size = UDim2.fromOffset(58, 28)
+    switch.BorderSizePixel = 0
+    switch.BackgroundColor3 = Color3.fromRGB(52, 32, 68)
+    switch.Parent = b
+    corner(switch, 15)
+
+    local knob = Instance.new("Frame")
+    knob.Name = "Knob"
+    knob.Size = UDim2.fromOffset(22, 22)
+    knob.Position = UDim2.new(0, 3, 0.5, -11)
+    knob.BackgroundColor3 = Color3.fromRGB(248, 240, 255)
+    knob.BorderSizePixel = 0
+    knob.Parent = switch
+    corner(knob, 11)
+    local knobStroke = Instance.new("UIStroke")
+    knobStroke.Color = Color3.fromRGB(207, 161, 254)
+    knobStroke.Thickness = 1
+    knobStroke.Parent = knob
+
+    local function paint()
+        local special = (name == "Auto Join Event")
+        local accent = special and Color3.fromRGB(255, 143, 42) or Color3.fromRGB(156, 44, 246)
+        local off = Color3.fromRGB(53, 33, 67)
+        local target = on and accent or off
+        -- Never animate on every theme refresh if there is no actual state change.
+        if switch.BackgroundColor3 ~= target then
+            TweenService:Create(switch, TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundColor3 = target}):Play()
+        end
+        local targetPos = on and UDim2.new(1, -25, 0.5, -11) or UDim2.new(0, 3, 0.5, -11)
+        if knob.Position ~= targetPos then
+            TweenService:Create(knob, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = targetPos}):Play()
+        end
+        symbol.TextColor3 = special and Color3.fromRGB(255, 166, 73) or Color3.fromRGB(186, 80, 255)
+        stroke.Color = on and accent or Color3.fromRGB(78, 37, 116)
+        grad.Enabled = false -- Preserve the screenshot's single-tone purple look.
+    end
+    toggleRefreshers[#toggleRefreshers + 1] = paint
+    local function set(v)
+        on = v and true or false
+        paint()
+        onChange(on)
+        saveSettings()
+    end
+    b.MouseButton1Click:Connect(function() set(not on) end)
+    if initial then set(true) else paint() end
+    return b, set
 end
 
 local function makeLabel(parentObj, text, order)
@@ -1323,45 +1389,62 @@ end
 
 -- Header (title + minimize)
 header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 54)
-header.BackgroundColor3 = currentTheme:Lerp(Color3.new(0, 0, 0), 0.3)
+header.Size = UDim2.new(1, 0, 0, 92)
+header.BackgroundColor3 = Color3.fromRGB(16, 6, 32)
 header.BorderSizePixel = 0
 header.LayoutOrder = 1
 header.Parent = frame
 
 local titulo = Instance.new("TextLabel")
-titulo.Size = UDim2.new(1, -48, 0, 27)
-titulo.Position = UDim2.new(0, 12, 0, 5)
+titulo.Size = UDim2.new(1, -128, 0, 39)
+titulo.Position = UDim2.new(0, 102, 0, 14)
 titulo.BackgroundTransparency = 1
-titulo.Text = "⚡ SatisHub V3.2"
+titulo.Text = "SatisHub V3"
 titulo.TextColor3 = WHITE
 titulo.TextXAlignment = Enum.TextXAlignment.Left
 titulo.Font = Enum.Font.GothamBold
-titulo.TextSize = 19
+titulo.TextSize = 27
 titulo.Parent = header
 do
     local sub = Instance.new("TextLabel")
-    sub.Size = UDim2.new(1,-48,0,15)
-    sub.Position = UDim2.new(0,14,0,31)
+    sub.Size = UDim2.new(1,-126,0,18)
+    sub.Position = UDim2.new(0,103,0,55)
     sub.Text = "ULTIMATE AUTOMATION HUB"
-    sub.TextSize = 9
+    sub.TextSize = 12
     sub.Font = Enum.Font.GothamMedium
     sub.TextXAlignment = Enum.TextXAlignment.Left
     sub.BackgroundTransparency = 1
-    sub.TextColor3 = Color3.fromRGB(132,153,188)
+    sub.TextColor3 = Color3.fromRGB(192,143,234)
     sub.Parent = header
+end
+
+-- Violet insignia recreates the four-blade mark from the visual mock-up.
+do
+    local logo = Instance.new("TextLabel")
+    logo.Name = "AnimePurpleLogo"
+    logo.Size = UDim2.fromOffset(72, 72)
+    logo.Position = UDim2.fromOffset(17, 8)
+    logo.BackgroundTransparency = 1
+    logo.Text = "✦"
+    logo.Font = Enum.Font.GothamBold
+    logo.TextSize = 63
+    logo.TextColor3 = Color3.fromRGB(184, 64, 255)
+    logo.TextStrokeColor3 = Color3.fromRGB(90, 19, 166)
+    logo.TextStrokeTransparency = 0.3
+    logo.ZIndex = 3
+    logo.Parent = header
 end
 
 -- RGB title
 local titleGrad = Instance.new("UIGradient")
-titleGrad.Color = RAINBOW
+titleGrad.Color = ColorSequence.new(Color3.fromRGB(250,235,255), Color3.fromRGB(219,170,255))
 titleGrad.Parent = titulo
 rgbGradients[#rgbGradients + 1] = titleGrad
-titleGrad.Enabled = state.rgbEnabled
+titleGrad.Enabled = true
 
 local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.fromOffset(24, 24)
-minBtn.Position = UDim2.new(1, -34, 0, 15)
+minBtn.Size = UDim2.fromOffset(36, 36)
+minBtn.Position = UDim2.new(1, -99, 0, 25)
 minBtn.BackgroundColor3 = btnColor()
 minBtn.Text = "–"
 minBtn.TextColor3 = WHITE
@@ -1370,7 +1453,7 @@ minBtn.TextSize = 16
 minBtn.BorderSizePixel = 0
 minBtn.AutoButtonColor = false
 minBtn.Parent = header
-corner(minBtn, 6)
+corner(minBtn, 11)
 plainButtons[#plainButtons + 1] = minBtn
 do
 	local st = Instance.new("UIStroke")
@@ -1378,6 +1461,26 @@ do
 	st.Thickness = 1.5
 	st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	st.Parent = minBtn
+end
+
+-- Visual close control (minimizes instead of stopping farming tasks).
+local animeCloseBtn = Instance.new("TextButton")
+animeCloseBtn.Size = UDim2.fromOffset(36, 36)
+animeCloseBtn.Position = UDim2.new(1, -48, 0, 25)
+animeCloseBtn.BackgroundColor3 = Color3.fromRGB(47, 17, 69)
+animeCloseBtn.Text = "X"
+animeCloseBtn.TextSize = 17
+animeCloseBtn.TextColor3 = WHITE
+animeCloseBtn.Font = Enum.Font.GothamBold
+animeCloseBtn.BorderSizePixel = 0
+animeCloseBtn.AutoButtonColor = false
+animeCloseBtn.Parent = header
+corner(animeCloseBtn, 11)
+do
+    local outline = Instance.new("UIStroke")
+    outline.Color = Color3.fromRGB(140, 59, 197)
+    outline.Thickness = 1
+    outline.Parent = animeCloseBtn
 end
 
 makeDraggable(header, frame)
@@ -1444,7 +1547,10 @@ local function setMinimized(min)
 end
 
 minBtn.MouseButton1Click:Connect(function()
-	setMinimized(true)
+    setMinimized(true)
+end)
+animeCloseBtn.MouseButton1Click:Connect(function()
+    setMinimized(true)
 end)
 
 makeDraggable(miniIcon, miniIcon, function()
@@ -1465,15 +1571,16 @@ bodyLayout.Parent = body
 
 -- Footer: user who is running the script (name + avatar)
 userBar = Instance.new("Frame")
-userBar.Size = UDim2.new(1, 0, 0, 36)
-userBar.BackgroundColor3 = currentTheme:Lerp(Color3.new(0, 0, 0), 0.3)
+userBar.Size = UDim2.new(1, 0, 0, 52)
+userBar.BackgroundColor3 = Color3.fromRGB(24, 8, 43)
 userBar.BorderSizePixel = 0
 userBar.LayoutOrder = 3
 userBar.Parent = frame
+userBar.Visible = false
 
 local avatar = Instance.new("ImageLabel")
 avatar.Size = UDim2.fromOffset(26, 26)
-avatar.Position = UDim2.new(0, 8, 0.5, -13)
+avatar.Position = UDim2.new(0, 278, 0.5, -13)
 avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 avatar.BorderSizePixel = 0
 avatar.Parent = userBar
@@ -1489,15 +1596,45 @@ userLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
 userLabel.TextXAlignment = Enum.TextXAlignment.Left
 userLabel.TextTruncate = Enum.TextTruncate.AtEnd
 userLabel.Font = Enum.Font.GothamBold
-userLabel.TextSize = 12
+userLabel.TextSize = 11
 userLabel.Parent = userBar
+
+do
+    local ready = Instance.new("TextLabel")
+    ready.Name = "AnimePurpleStatus"
+    ready.Size = UDim2.new(0, 240, 1, 0)
+    ready.Position = UDim2.new(0, 51, 0, 0)
+    ready.BackgroundTransparency = 1
+    ready.Font = Enum.Font.GothamBold
+    ready.TextColor3 = Color3.fromRGB(234, 217, 255)
+    ready.TextSize = 14
+    ready.TextXAlignment = Enum.TextXAlignment.Left
+    ready.Text = "Status: Ready"
+    ready.Parent = userBar
+    local light = Instance.new("Frame")
+    light.Position = UDim2.new(0, 24, 0.5, -7)
+    light.Size = UDim2.fromOffset(14, 14)
+    light.BackgroundColor3 = Color3.fromRGB(32, 245, 110)
+    light.BorderSizePixel = 0
+    light.Parent = userBar
+    Instance.new("UICorner", light).CornerRadius = UDim.new(1, 0)
+    local version = Instance.new("TextLabel")
+    version.Size = UDim2.fromOffset(83, 48)
+    version.Position = UDim2.new(1, -96, 0, 0)
+    version.BackgroundTransparency = 1
+    version.Text = "v3.7"
+    version.Font = Enum.Font.GothamBold
+    version.TextColor3 = Color3.fromRGB(208, 156, 255)
+    version.TextSize = 15
+    version.Parent = userBar
+end
 
 -- Incognito hides account details from the SatisHub footer only.
 local function refreshIncognito()
     avatar.Visible = not state.incognitoMode
     userLabel.Text = state.incognitoMode and "User: Hidden" or ("User: " .. Players.LocalPlayer.Name)
-    userLabel.Position = state.incognitoMode and UDim2.new(0, 10, 0, 0) or UDim2.new(0, 42, 0, 0)
-    userLabel.Size = state.incognitoMode and UDim2.new(1, -20, 1, 0) or UDim2.new(1, -50, 1, 0)
+    userLabel.Position = state.incognitoMode and UDim2.new(0, 280, 0, 0) or UDim2.new(0, 320, 0, 0)
+    userLabel.Size = state.incognitoMode and UDim2.new(0, 270, 1, 0) or UDim2.new(0, 235, 1, 0)
 end
 refreshIncognito()
 
@@ -1518,13 +1655,15 @@ end)
 local keyPage = makePage(body, 1)
 
 local caixaKey = makeTextBox(keyPage, "Enter key", "")
-caixaKey.Size = UDim2.new(1, -20, 0, 30)
+caixaKey.Size = UDim2.new(0, 360, 0, 42)
 caixaKey.LayoutOrder = 1
 
 local botaoKey = makeButton(keyPage, "Verify", 2)
+botaoKey.Size = UDim2.new(0, 360, 0, 44)
 
 -- Copies the official SatisHub Discord invite when the user requests a key.
 local getKeyButton = makeButton(keyPage, "Get Key", 3)
+getKeyButton.Size = UDim2.new(0, 360, 0, 44)
 getKeyButton.MouseButton1Click:Connect(function()
     local url = "https://discord.gg/WvCUTSDSNT"
     local copy = setclipboard or toclipboard
@@ -1546,6 +1685,7 @@ end)
 local msgKey = makeLabel(keyPage, "", 4)
 msgKey.TextColor3 = ERROR_COLOR
 msgKey.TextXAlignment = Enum.TextXAlignment.Center
+msgKey.Size = UDim2.new(0, 360, 0, 25)
 
 -- Tabs row
 local tabsRow = Instance.new("Frame")
@@ -1572,24 +1712,25 @@ local activeTab = "main"
 
 local function makeTab(text, order, key)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0.20, -5, 1, -8)
-	b.BackgroundColor3 = currentTheme:Lerp(WHITE, 0.08)
-	b.Text = text
+	b.Size = UDim2.new(1, -18, 0, 55)
+	b.BackgroundColor3 = Color3.fromRGB(27, 12, 49)
+	b.Text = "    " .. text
+    b.TextXAlignment = Enum.TextXAlignment.Left
 	b.TextColor3 = WHITE
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 10
+	b.TextSize = 16
 	b.BorderSizePixel = 0
 	b.AutoButtonColor = false
 	b.LayoutOrder = order
 	b.Parent = tabsRow
-	corner(b, 8)
+	corner(b, 13)
 	local stroke, grad = addRgbStroke(b, 1.5)
 	local underline = Instance.new("Frame")
     underline.Name = "SatisV31ActiveBar"
     underline.AnchorPoint = Vector2.new(0.5, 1)
     underline.Position = UDim2.new(0.5, 0, 1, -2)
     underline.Size = UDim2.new(0, 0, 0, 2)
-    underline.BackgroundColor3 = Color3.fromRGB(100, 177, 255)
+    underline.BackgroundColor3 = Color3.fromRGB(203, 97, 255)
     underline.BorderSizePixel = 0
     underline.Parent = b
     corner(underline, 2)
@@ -1601,7 +1742,19 @@ local function makeTab(text, order, key)
     b.MouseLeave:Connect(function()
         TweenService:Create(tabScale, TweenInfo.new(0.18, Enum.EasingStyle.Quart), {Scale=1}):Play()
     end)
-    tabInfo[key] = { btn = b, stroke = stroke, grad = grad, underline=underline }
+    local glyph = Instance.new("TextLabel")
+    glyph.Name = "SidebarGlyph"
+    glyph.Position = UDim2.new(0, 10, 0, 0)
+    glyph.Size = UDim2.fromOffset(33, 54)
+    glyph.BackgroundTransparency = 1
+    glyph.Font = Enum.Font.GothamBold
+    glyph.TextSize = 21
+    glyph.TextXAlignment = Enum.TextXAlignment.Center
+    glyph.TextColor3 = Color3.fromRGB(200, 114, 255)
+    glyph.Text = ({main="⌂", event="▣", player="●", settings="⚙", about="ⓘ"})[key] or "✦"
+    glyph.Parent = b
+    b.Text = "       " .. text
+    tabInfo[key] = { btn = b, stroke = stroke, grad = grad, underline=underline, glyph=glyph }
 	return b
 end
 
@@ -1615,11 +1768,11 @@ refreshTabs = function()
 	for key, info in pairs(tabInfo) do
 		local active = (key == activeTab)
 		TweenService:Create(info.btn, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            BackgroundColor3 = active and Color3.fromRGB(33, 55, 92) or Color3.fromRGB(22, 28, 42),
-            TextColor3 = active and Color3.fromRGB(147, 194, 255) or Color3.fromRGB(155, 166, 186)
+            BackgroundColor3 = active and Color3.fromRGB(89, 23, 139) or Color3.fromRGB(26, 9, 47),
+            TextColor3 = active and Color3.fromRGB(251, 238, 255) or Color3.fromRGB(197, 148, 234)
         }):Play()
         info.grad.Enabled = active and state.rgbEnabled
-        info.stroke.Color = active and Color3.fromRGB(105, 159, 239) or OFF_STROKE
+        info.stroke.Color = active and Color3.fromRGB(189, 75, 255) or OFF_STROKE
         TweenService:Create(info.underline, TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
             Size = active and UDim2.new(0.66, 0, 0, 2) or UDim2.new(0, 0, 0, 2)
         }):Play()
@@ -2565,7 +2718,7 @@ local function startMemory()
 		b.AutoButtonColor = false
 		b.ZIndex = 33
 		b.Parent = grid
-		corner(b, 10)
+		corner(b, 13)
 		local st = Instance.new("UIStroke")
 		st.Color = Color3.fromRGB(20, 20, 26)
 		st.Thickness = 2
@@ -2973,7 +3126,7 @@ end, state.autoExecTeleport)
 autoExecReady = true
 
 -- Display the new settings first so they are easy to find.
-makeLabel(settingsPage, "BUILD: EVENT-TAB-V2 | Anti-AFK + Mini Start", 8)
+makeLabel(settingsPage, "BUILD: V3.7 Anime Purple | Anti-AFK", 8)
 
 makeToggle(settingsPage, "Anti-AFK", 8.5, function(v)
     state.antiAfk = v
@@ -3053,7 +3206,7 @@ local function makeText(parentObj, text, order, size, color, bold)
 	return l
 end
 
-makeText(aboutPage, "SatisHub V3", 1, 17, WHITE, true)
+makeText(aboutPage, "SatisHub V3.7  |  Anime Purple", 1, 17, WHITE, true)
 makeText(aboutPage, "Discord: satis1x", 2, 14, Color3.fromRGB(210, 210, 220), true)
 
 local copyBtn = makeButton(aboutPage, "Copy Discord", 3)
@@ -3068,6 +3221,162 @@ end)
 
 makeText(aboutPage, "If someone charged you for this script, you got scammed.", 4, 13, ERROR_COLOR, true)
 makeText(aboutPage, autoExecStatus, 5, 11, Color3.fromRGB(170, 175, 190), false)
+
+-- ===== V3.7 ANIME PURPLE: layout only. All pages and their callbacks are kept. =====
+local animeUI = {}
+do
+    -- The key page stays outside the app shell until authentication succeeds.
+    animeUI.shell = Instance.new("Frame")
+    animeUI.shell.Name = "AnimePurpleShell"
+    animeUI.shell.LayoutOrder = 2
+    animeUI.shell.Size = UDim2.new(1, 0, 0, 492)
+    animeUI.shell.BackgroundTransparency = 1
+    animeUI.shell.Visible = false
+    animeUI.shell.Parent = body
+
+    local side = Instance.new("Frame")
+    side.Name = "AnimePurpleSidebar"
+    side.Size = UDim2.new(0, 171, 1, 0)
+    side.Position = UDim2.fromOffset(0, 0)
+    side.BackgroundColor3 = Color3.fromRGB(19, 5, 35)
+    side.BorderSizePixel = 0
+    side.Parent = animeUI.shell
+    local sideLine = Instance.new("Frame")
+    sideLine.Name = "PurpleDivider"
+    sideLine.Position = UDim2.new(1, -1, 0, 13)
+    sideLine.Size = UDim2.new(0, 1, 1, -26)
+    sideLine.BackgroundColor3 = Color3.fromRGB(87, 29, 128)
+    sideLine.BorderSizePixel = 0
+    sideLine.Parent = side
+
+    tabsRow.Parent = side
+    tabsRow.Position = UDim2.fromOffset(0, 8)
+    tabsRow.Size = UDim2.new(1, 0, 0, 385)
+    tabsRow.BackgroundTransparency = 1
+    tabsLayout.FillDirection = Enum.FillDirection.Vertical
+    tabsLayout.Padding = UDim.new(0, 10)
+    tabsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    tabsLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    tabsPad.PaddingTop = UDim.new(0, 5)
+    tabsPad.PaddingLeft = UDim.new(0, 9)
+    tabsPad.PaddingRight = UDim.new(0, 9)
+
+    local sideDecoration = Instance.new("TextLabel")
+    sideDecoration.Name = "SidebarCaption"
+    sideDecoration.Position = UDim2.new(0, 15, 1, -53)
+    sideDecoration.Size = UDim2.new(1, -30, 0, 29)
+    sideDecoration.BackgroundTransparency = 1
+    sideDecoration.Text = "✦   ANIME PURPLE"
+    sideDecoration.Font = Enum.Font.GothamBold
+    sideDecoration.TextSize = 10
+    sideDecoration.TextColor3 = Color3.fromRGB(160, 81, 210)
+    sideDecoration.TextXAlignment = Enum.TextXAlignment.Left
+    sideDecoration.Parent = side
+
+    local right = Instance.new("Frame")
+    right.Name = "AnimePurpleContent"
+    right.Position = UDim2.fromOffset(182, 8)
+    right.Size = UDim2.new(1, -192, 1, -16)
+    right.BackgroundColor3 = Color3.fromRGB(24, 7, 45)
+    right.BorderSizePixel = 0
+    right.ClipsDescendants = true
+    right.Parent = animeUI.shell
+    corner(right, 20)
+    local rStroke = Instance.new("UIStroke")
+    rStroke.Color = Color3.fromRGB(109, 43, 174)
+    rStroke.Thickness = 1.3
+    rStroke.Parent = right
+
+    local backdrop = Instance.new("Frame")
+    backdrop.Size = UDim2.new(1, 0, 0, 170)
+    backdrop.BackgroundColor3 = Color3.fromRGB(34, 6, 64)
+    backdrop.BorderSizePixel = 0
+    backdrop.Parent = right
+    local bgGradient = Instance.new("UIGradient")
+    bgGradient.Rotation = 0
+    bgGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 8, 54)),
+        ColorSequenceKeypoint.new(0.55, Color3.fromRGB(72, 18, 113)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(25, 5, 50))
+    })
+    bgGradient.Parent = backdrop
+
+    local bannerAsset = loadAnimePurpleBanner()
+    if bannerAsset then
+        local banner = Instance.new("ImageLabel")
+        banner.Name = "MeliodasAnimeBackground"
+        banner.Size = UDim2.new(1, 0, 0, 186)
+        banner.Position = UDim2.fromOffset(0, 0)
+        banner.BackgroundTransparency = 1
+        banner.Image = bannerAsset
+        banner.ImageTransparency = 0.08
+        banner.ScaleType = Enum.ScaleType.Crop
+        banner.Parent = right
+    end
+    -- Soft fade under the character, so controls remain legible.
+    local fade = Instance.new("Frame")
+    fade.Name = "AnimePurpleBannerFade"
+    fade.Position = UDim2.fromOffset(0, 118)
+    fade.Size = UDim2.new(1, 0, 0, 89)
+    fade.BackgroundColor3 = Color3.fromRGB(24, 7, 45)
+    fade.BorderSizePixel = 0
+    fade.Parent = right
+    local fadeG = Instance.new("UIGradient")
+    fadeG.Rotation = 90
+    fadeG.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(1, 0)
+    })
+    fadeG.Parent = fade
+
+    animeUI.pageTitle = Instance.new("TextLabel")
+    animeUI.pageTitle.Name = "AnimePageTitle"
+    animeUI.pageTitle.Size = UDim2.new(1, -34, 0, 43)
+    animeUI.pageTitle.Position = UDim2.fromOffset(26, 18)
+    animeUI.pageTitle.BackgroundTransparency = 1
+    animeUI.pageTitle.Text = "✦  Main"
+    animeUI.pageTitle.TextXAlignment = Enum.TextXAlignment.Left
+    animeUI.pageTitle.TextColor3 = Color3.fromRGB(250, 238, 255)
+    animeUI.pageTitle.Font = Enum.Font.GothamBold
+    animeUI.pageTitle.TextSize = 26
+    animeUI.pageTitle.TextStrokeColor3 = Color3.fromRGB(17, 4, 29)
+    animeUI.pageTitle.TextStrokeTransparency = 0.47
+    animeUI.pageTitle.Parent = right
+
+    animeUI.pageDesc = Instance.new("TextLabel")
+    animeUI.pageDesc.Name = "AnimePageDesc"
+    animeUI.pageDesc.Position = UDim2.fromOffset(27, 57)
+    animeUI.pageDesc.Size = UDim2.new(1, -45, 0, 27)
+    animeUI.pageDesc.BackgroundTransparency = 1
+    animeUI.pageDesc.Text = "Core automation features"
+    animeUI.pageDesc.Font = Enum.Font.GothamMedium
+    animeUI.pageDesc.TextSize = 13
+    animeUI.pageDesc.TextXAlignment = Enum.TextXAlignment.Left
+    animeUI.pageDesc.TextColor3 = Color3.fromRGB(217, 162, 254)
+    animeUI.pageDesc.Parent = right
+
+    animeUI.scroll = Instance.new("ScrollingFrame")
+    animeUI.scroll.Name = "AnimePurplePageScroll"
+    animeUI.scroll.Position = UDim2.fromOffset(13, 133)
+    animeUI.scroll.Size = UDim2.new(1, -26, 1, -146)
+    animeUI.scroll.BackgroundTransparency = 1
+    animeUI.scroll.BorderSizePixel = 0
+    animeUI.scroll.ScrollBarThickness = 3
+    animeUI.scroll.ScrollBarImageColor3 = Color3.fromRGB(184, 76, 255)
+    animeUI.scroll.CanvasSize = UDim2.new(0,0,0,0)
+    animeUI.scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    animeUI.scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    animeUI.scroll.Parent = right
+    local pagesLayout = Instance.new("UIListLayout")
+    pagesLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    pagesLayout.Padding = UDim.new(0, 5)
+    pagesLayout.Parent = animeUI.scroll
+    for _, p in ipairs({mainPage, eventPage, playerPage, settingsPage, aboutPage}) do
+        p.Parent = animeUI.scroll
+        p.Size = UDim2.new(1, -4, 0, 0)
+        p.BackgroundTransparency = 1
+    end
+end
 
 -- Tab switching
 local function showTab(name)
@@ -3087,6 +3396,26 @@ local function showTab(name)
     settingsPage.Visible = (name == "settings")
     aboutPage.Visible = (name == "about")
     refreshTabs()
+    if animeUI.pageTitle then
+        local titleData = ({
+            main = {"✦  Main", "Core automation features"},
+            event = {"✦  Evento", "Event and card automation"},
+            player = {"✦  Player", "Player tools and mini games"},
+            settings = {"✦  Settings", "Customize your SatisHub"},
+            about = {"✦  About", "Script information and credits"}
+        })[name]
+        animeUI.pageTitle.Text = titleData[1]
+        animeUI.pageDesc.Text = titleData[2]
+        animeUI.scroll.CanvasPosition = Vector2.new(0, 0)
+        local scTitle = animeUI.pageTitle:FindFirstChild("AnimeTitleScale")
+        if not scTitle then
+            scTitle = Instance.new("UIScale")
+            scTitle.Name = "AnimeTitleScale"
+            scTitle.Parent = animeUI.pageTitle
+        end
+        scTitle.Scale = 0.95
+        TweenService:Create(scTitle, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Scale = 1}):Play()
+    end
     local page = (name == "main" and mainPage) or
         (name == "event" and eventPage) or
         (name == "player" and playerPage) or
@@ -3131,6 +3460,9 @@ end
 local keyVerified = false
 local function unlockMenu()
     keyPage.Visible = false
+    animeUI.shell.Visible = true
+    userBar.Visible = true
+    frame.Size = UDim2.fromOffset(770, 0)
     tabsRow.Visible = true
     showTab("main")
     setMinimized(true)
