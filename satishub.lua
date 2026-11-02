@@ -68,12 +68,14 @@ local state = {
 	autoCard = false,
 	randomCard = false,
 	autoJoinEvent = false,
+	autoJoinDailyChallenge = false,
 	randomPlace = false,
 	placeRadius = "15",
 	unitIds = "",
 	transparent = false,
 	autoUpgrade = false,
 	autoScanUnits = false,
+	antiAfk = false,
 	minimizeKey = "RightShift",
 	incognitoMode = false,
 	autoExecTeleport = true,
@@ -82,6 +84,29 @@ local state = {
 	rgbEnabled = true,
 	themeColor = "",
 }
+
+-- ===== Anti-AFK: only acts when Roblox fires the local idle event =====
+-- Avoids continuous input loops and does not interfere with normal play.
+do
+    local okService, virtualUser = pcall(function()
+        return game:GetService("VirtualUser")
+    end)
+    local localPlayer = Players.LocalPlayer
+    if okService and virtualUser and localPlayer then
+        localPlayer.Idled:Connect(function()
+            if not alive() or not state.antiAfk then return end
+            local success, err = pcall(function()
+                virtualUser:CaptureController()
+                virtualUser:ClickButton2(Vector2.new(0, 0))
+            end)
+            if not success then
+                warn("[SatisHub] Anti-AFK action failed: " .. tostring(err))
+            end
+        end)
+    else
+        warn("[SatisHub] Anti-AFK VirtualUser unavailable")
+    end
+end
 
 -- ===== Settings saved to file (survive teleports) =====
 local SAVE_FILE = "satishub_settings.json"
@@ -1194,6 +1219,15 @@ makeToggle(mainPage, "Auto Leave (Lobby)", 3.5, function(v)
     state.autoLeave = v
 end, state.autoLeave)
 
+-- Daily Challenge matchmaking. Keep this on Main, separate from Event matchmaking.
+-- When both toggles are ON, Daily Challenge takes priority to prevent overlapping teleports.
+do
+    makeToggle(mainPage, "Auto Join Daily Challenge", 3.6, function(v)
+        state.autoJoinDailyChallenge = v
+        -- If both modes are enabled, Daily Challenge takes priority.
+    end, state.autoJoinDailyChallenge)
+end
+
 -- Auto Select Card and Random Card are mutually exclusive:
 -- turning one on turns the other one off.
 
@@ -1235,7 +1269,8 @@ caixaOpcao.FocusLost:Connect(function()
 end)
 
 makeToggle(eventPage, "Auto Join Event", 1, function(v)
-	state.autoJoinEvent = v
+    state.autoJoinEvent = v
+    -- Daily Challenge has priority if both matchmaking toggles are enabled.
 end, state.autoJoinEvent)
 
 makeToggle(mainPage, "Random Place Units", 9, function(v)
@@ -2467,7 +2502,11 @@ end, state.autoExecTeleport)
 autoExecReady = true
 
 -- Display the new settings first so they are easy to find.
-makeLabel(settingsPage, "BUILD: EVENT-TAB-V1 | Auto Leave Fix", 8)
+makeLabel(settingsPage, "BUILD: EVENT-TAB-V2 | Anti-AFK + Mini Start", 8)
+
+makeToggle(settingsPage, "Anti-AFK", 8.5, function(v)
+    state.antiAfk = v
+end, state.antiAfk)
 
 makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
     state.autoScanUnits = v
@@ -2596,6 +2635,8 @@ local function verificar()
 		showTab("main")
 		state.savedKey = KEY
 		saveSettings()
+        -- The key screen remains accessible at startup; minimize after verification.
+        setMinimized(true)
 	else
 		msgKey.Text = "Invalid key"
 	end
@@ -3505,7 +3546,7 @@ task.spawn(function()
     local autoJoinRequested = false
     local autoJoinBusy = false
 	while alive() do
-		if not state.autoJoinEvent then
+		if not state.autoJoinEvent or state.autoJoinDailyChallenge then
 			autoJoinRequested = false
 		elseif not matchEnding and not autoJoinRequested and not autoJoinBusy then
 			autoJoinRequested = true
@@ -3521,6 +3562,27 @@ task.spawn(function()
 		task.wait(1)
 	end
 end)
+
+-- Daily Challenge: send exactly one matchmaking request for each activation.
+-- Do not issue requests while the match is ending; Daily Challenge has priority over Event.
+local function runDailyChallengeJoin()
+    local requested = false
+    while alive() do
+        if not state.autoJoinDailyChallenge then
+            requested = false
+        elseif not requested and not matchEnding then
+            requested = true
+            local ok, result = invokeRet("request_matchmaking", "__DAILY_CHALLENGE")
+            if not ok then
+                warn("[SatisHub] Daily Challenge: matchmaking request failed: " .. tostring(result))
+            else
+                print("[SatisHub] Daily Challenge: matchmaking requested; waiting for server.")
+            end
+        end
+        task.wait(1)
+    end
+end
+task.spawn(runDailyChallengeJoin)
 
 -- LOADING screen (shown after the notice / when the script is executed)
 task.spawn(function()
@@ -3610,5 +3672,11 @@ task.spawn(function()
 	end
 
 	card:Destroy()
-	frame.Visible = true
+	-- Start minimized after loading, except when the user must enter the key.
+    if keyPage.Visible then
+        frame.Visible = true
+        miniIcon.Visible = false
+    else
+        setMinimized(true)
+    end
 end)
