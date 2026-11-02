@@ -2628,9 +2628,11 @@ refreshTransparency()
 refreshTabs()
 
 -- Loops
+-- Pausa as automacoes assim que o fim da partida for identificado.
+local matchEnding = false
 task.spawn(function()
 	while alive() do
-		if state.autoStart then
+		if state.autoStart and not matchEnding then
 			invoke("vote_start")
 		end
 		task.wait(INTERVALO)
@@ -2646,7 +2648,7 @@ task.spawn(function()
 		elseif state.autoCard then
 			opt = state.cardOption
 		end
-		if opt then
+		if opt and not matchEnding then
 			invoke("select_roguelike_option", opt)
 		end
 		task.wait(INTERVALO)
@@ -2655,7 +2657,7 @@ end)
 
 task.spawn(function()
 	while alive() do
-		if state.autoSkip then
+		if state.autoSkip and not matchEnding then
 			invoke("vote_wave_skip")
 		end
 		task.wait(INTERVALO)
@@ -2665,46 +2667,105 @@ end)
 -- Replay vote when the game finishes
 task.spawn(function()
 	while alive() do
-		if state.autoReplay and not state.autoLeave then
+		if state.autoReplay and not state.autoLeave and not matchEnding then
 			invoke("set_game_finished_vote", "replay")
 		end
 		task.wait(INTERVALO)
 	end
 end)
 
--- ===== Auto Leave on victory OR defeat =====
--- Cobalt's firesignal example describes an incoming server notification;
--- do not call firesignal here, as it doesn't initiate a lobby teleport.
--- Return-to-lobby RemoteFunction and its zero-argument call were captured with Cobalt.
-do
-    local eventFolder = endpoints and endpoints:FindFirstChild("server_to_client")
-    local finishedEvent = eventFolder and eventFolder:FindFirstChild("game_finished")
-    local leaveSent = false
-    if finishedEvent and finishedEvent:IsA("RemoteEvent") then
-        finishedEvent.OnClientEvent:Connect(function(result)
-            if not alive() or not state.autoLeave or leaveSent then return end
-            -- Ignore incomplete/unrelated event payloads; do not rely on victory flag.
-            if type(result) ~= "table" or type(result.stats) ~= "table" then return end
-            leaveSent = true
-            task.delay(2, function()
-                if not alive() or not state.autoLeave then return end
-                -- Verified from the Return to Lobby button (Cobalt capture).
-                -- This is a RemoteFunction and takes NO arguments.
-                local ok, response = invokeRet("teleport_back_to_lobby")
-                if ok then
-                    print("[SatisHub] Auto Leave: Return to Lobby requested.")
-                    if response == false then
-                        warn("[SatisHub] Auto Leave: server refused the lobby request.")
-                    end
+-- ===== Auto Leave: victory/defeat or visible end screen =====
+-- O evento pode chegar antes de o UI aparecer. Nunca repetir o remote automaticamente.
+local function startAutoLeave()
+    local requested, pending = false, false
+    local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui", 15)
+
+    local function requestLobby(origin)
+        if requested or pending or not alive() or not state.autoLeave then return end
+        pending = true
+        matchEnding = true -- bloqueia votes, cartas, upgrades e placements
+        print("[SatisHub] Auto Leave: fim detectado por " .. origin .. "; a aguardar 3s")
+        task.delay(3, function()
+            if not alive() or not state.autoLeave then
+                pending = false
+                matchEnding = false
+                return
+            end
+            requested = true -- reservado ANTES do InvokeServer (que pode bloquear)
+            pending = false
+            local remote = c2s and c2s:FindFirstChild("teleport_back_to_lobby")
+            if not remote or not remote:IsA("RemoteFunction") then
+                warn("[SatisHub] Auto Leave: remote teleport_back_to_lobby nao encontrado")
+                return
+            end
+            print("[SatisHub] Auto Leave: enviando UM pedido ao servidor")
+            -- InvokeServer pode ficar em espera: nao bloqueia a rotina de detecao.
+            task.spawn(function()
+                local ok, reply = pcall(function() return remote:InvokeServer() end)
+                if not alive() then return end
+                if not ok then
+                    warn("[SatisHub] Auto Leave: erro do servidor: " .. tostring(reply))
+                elseif reply == false then
+                    warn("[SatisHub] Auto Leave: servidor respondeu false; usa Return to Lobby manualmente")
                 else
-                    warn("[SatisHub] Auto Leave failed: " .. tostring(response))
+                    print("[SatisHub] Auto Leave: servidor respondeu " .. tostring(reply) .. "; a aguardar teleport")
+                end
+            end)
+            task.delay(12, function()
+                if alive() then
+                    warn("[SatisHub] Auto Leave: se continuares na partida, o servidor nao concluiu o teleport; usa o botao manual. Nao vou repetir o pedido.")
                 end
             end)
         end)
-    else
-        warn("[SatisHub] Auto Leave: game_finished event not found in this server.")
     end
+
+    local folder = endpoints and endpoints:FindFirstChild("server_to_client")
+    local event = folder and folder:FindFirstChild("game_finished")
+    if event and event:IsA("RemoteEvent") then
+        event.OnClientEvent:Connect(function()
+            if state.autoLeave then requestLobby("game_finished") end
+        end)
+    else
+        warn("[SatisHub] Auto Leave: game_finished nao encontrado; fallback do ecrã ativo")
+    end
+
+    local function visible(obj)
+        local node = obj
+        while node and node ~= playerGui do
+            if node:IsA("GuiObject") and not node.Visible then return false end
+            if node:IsA("ScreenGui") and not node.Enabled then return false end
+            node = node.Parent
+        end
+        return node == playerGui
+    end
+
+    local function endScreenShown()
+        if not playerGui then return false end
+        local lobby, replay = false, false
+        for _, obj in ipairs(playerGui:GetDescendants()) do
+            if obj:IsA("TextButton") and visible(obj) then
+                local t = tostring(obj.Text):lower():gsub("%s+", " ")
+                if t:find("return to lobby", 1, true) then lobby = true end
+                if t == "replay" then replay = true end
+                if lobby and replay then return true end
+            end
+        end
+        return false
+    end
+    task.spawn(function()
+        local seen = 0
+        while alive() do
+            if state.autoLeave and not requested and not pending then
+                seen = endScreenShown() and (seen + 1) or 0
+                if seen >= 2 then requestLobby("end-screen UI") end
+            else
+                seen = 0
+            end
+            task.wait(1.5)
+        end
+    end)
 end
+startAutoLeave()
 
 -- Unit automation lives in a separate function to keep the main Luau chunk below the 200-local-register limit.
 local function startUnitAutomation()
@@ -2757,7 +2818,7 @@ local upgradeWasOn = false
 
 task.spawn(function()
     while alive() do
-        if state.autoUpgrade then
+        if state.autoUpgrade and not matchEnding then
             if not upgradeWasOn then
                 upgradeNextAt = 0
                 upgradeIndex = 0
@@ -3356,7 +3417,7 @@ task.spawn(function()
 	local wasOn = false
 	while alive() do
 		local ids = collectUnitIds()
-		if state.randomPlace and os.clock() - lastScan > 15 then
+		if state.randomPlace and not matchEnding and os.clock() - lastScan > 15 then
 			-- Scan while we still have no confirmed unit ID, or while we have no IDs at all.
 			-- This catches the inventory once it loads / after the shop is opened.
 			if #ids == 0 or next(learned.confirmed) == nil then
@@ -3381,7 +3442,7 @@ task.spawn(function()
 
 		wasOn = state.randomPlace
 
-		if state.randomPlace and #ids > 0 then
+		if state.randomPlace and not matchEnding and #ids > 0 then
 			for _ = 1, ATTEMPTS_PER_CYCLE do
 				if not (alive() and state.randomPlace) then
 					break
@@ -3453,7 +3514,7 @@ task.spawn(function()
 	while alive() do
 		if not state.autoJoinEvent then
 			autoJoinRequested = false
-		elseif not autoJoinRequested and not autoJoinBusy then
+		elseif not matchEnding and not autoJoinRequested and not autoJoinBusy then
 			autoJoinRequested = true
 			autoJoinBusy = true
 			local ok, result = invokeRet("request_matchmaking", "summer2_event")
