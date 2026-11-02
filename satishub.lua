@@ -846,7 +846,11 @@ local function makeToggle(parentObj, name, order, onChange, initial)
 
 	local function paint()
 		b.Text = name .. (on and ": ON" or ": OFF")
-		b.BackgroundColor3 = on and ON_COLOR or btnColor()
+		if name == "Auto Join Event" then
+			b.BackgroundColor3 = on and Color3.fromRGB(255, 140, 25) or Color3.fromRGB(135, 72, 16)
+		else
+			b.BackgroundColor3 = on and ON_COLOR or btnColor()
+		end
 		stroke.Color = on and WHITE or OFF_STROKE
 		grad.Enabled = on and state.rgbEnabled
 	end
@@ -1130,12 +1134,12 @@ local activeTab = "main"
 
 local function makeTab(text, order, key)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0.25, -5, 1, -6)
+	b.Size = UDim2.new(0.20, -5, 1, -6)
 	b.BackgroundColor3 = currentTheme:Lerp(WHITE, 0.08)
 	b.Text = text
 	b.TextColor3 = WHITE
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 11
+	b.TextSize = 10
 	b.BorderSizePixel = 0
 	b.AutoButtonColor = false
 	b.LayoutOrder = order
@@ -1147,9 +1151,10 @@ local function makeTab(text, order, key)
 end
 
 local tabMain = makeTab("Main", 1, "main")
-local tabPlayer = makeTab("Player", 2, "player")
-local tabSettings = makeTab("Settings", 3, "settings")
-local tabAbout = makeTab("About", 4, "about")
+local tabEvent = makeTab("Evento", 2, "event")
+local tabPlayer = makeTab("Player", 3, "player")
+local tabSettings = makeTab("Settings", 4, "settings")
+local tabAbout = makeTab("About", 5, "about")
 
 refreshTabs = function()
 	for key, info in pairs(tabInfo) do
@@ -1164,6 +1169,10 @@ end
 -- MAIN page
 local mainPage = makePage(body, 3)
 mainPage.Visible = false
+
+-- Event page contains event joining and both card options.
+local eventPage = makePage(body, 3)
+eventPage.Visible = false
 
 local setAutoCard, setRandomCard
 local _
@@ -1188,14 +1197,14 @@ end, state.autoLeave)
 -- Auto Select Card and Random Card are mutually exclusive:
 -- turning one on turns the other one off.
 
-_, setAutoCard = makeToggle(mainPage, "Auto Select Card", 4, function(v)
+_, setAutoCard = makeToggle(eventPage, "Auto Select Card", 4, function(v)
 	state.autoCard = v
 	if v and state.randomCard and setRandomCard then
 		setRandomCard(false)
 	end
 end, state.autoCard)
 
-_, setRandomCard = makeToggle(mainPage, "Random Card (1-3)", 5, function(v)
+_, setRandomCard = makeToggle(eventPage, "Random Card (1-3)", 5, function(v)
 	state.randomCard = v
 	if v and state.autoCard and setAutoCard then
 		setAutoCard(false)
@@ -1206,7 +1215,7 @@ local optRow = Instance.new("Frame")
 optRow.Size = UDim2.new(1, -20, 0, 26)
 optRow.BackgroundTransparency = 1
 optRow.LayoutOrder = 6
-optRow.Parent = mainPage
+optRow.Parent = eventPage
 
 local optLabel = makeLabel(optRow, "Card option:", 0)
 optLabel.Size = UDim2.new(0.6, 0, 1, 0)
@@ -1225,14 +1234,7 @@ caixaOpcao.FocusLost:Connect(function()
 	saveSettings()
 end)
 
-makeToggle(mainPage, "FPS BOOST", 7, function(v)
-	black.Visible = v
-	pcall(function()
-		RunService:Set3dRenderingEnabled(not v)
-	end)
-end)
-
-makeToggle(mainPage, "Auto Join Event", 8, function(v)
+makeToggle(eventPage, "Auto Join Event", 1, function(v)
 	state.autoJoinEvent = v
 end, state.autoJoinEvent)
 
@@ -1263,31 +1265,10 @@ caixaRadius.FocusLost:Connect(function()
 	saveSettings()
 end)
 
-local caixaUnits = makeTextBox(mainPage, "Unit IDs (optional, comma separated)", state.unitIds)
-caixaUnits.Size = UDim2.new(1, -20, 0, 28)
-caixaUnits.LayoutOrder = 11
-caixaUnits.TextSize = 11
-
-caixaUnits.FocusLost:Connect(function()
-	state.unitIds = caixaUnits.Text
-	saveSettings()
-end)
-
 local placeStatus = makeLabel(mainPage, "Auto Place: scanning unit IDs...", 12)
 placeStatus.TextSize = 11
 placeStatus.TextWrapped = true
 placeStatus.Size = UDim2.new(1, -20, 0, 34)
-
-local scanBtn = makeButton(mainPage, "Scan Units", 13)
-scanBtn.MouseButton1Click:Connect(function()
-	scanBtn.Text = "Scanning..."
-	task.spawn(function()
-		local found = scanUnitIds(true)
-		scanBtn.Text = ("Found %d new unit ID(s)"):format(found)
-		task.wait(1.5)
-		scanBtn.Text = "Scan Units"
-	end)
-end)
 
 makeToggle(mainPage, "Auto Upgrade Units", 14, function(v)
 	state.autoUpgrade = v
@@ -2400,6 +2381,14 @@ end
 local settingsPage = makePage(body, 4)
 settingsPage.Visible = false
 
+makeToggle(settingsPage, "FPS BOOST", 0, function(v)
+	black.Visible = v
+	pcall(function()
+		RunService:Set3dRenderingEnabled(not v)
+	end)
+end)
+
+
 makeLabel(settingsPage, "GUI color (background)", 1)
 
 local swatchRow = Instance.new("Frame")
@@ -2478,7 +2467,7 @@ end, state.autoExecTeleport)
 autoExecReady = true
 
 -- Display the new settings first so they are easy to find.
-makeLabel(settingsPage, "BUILD: AUTO-LEAVE-V1 | Keybind + Auto Scan", 8)
+makeLabel(settingsPage, "BUILD: EVENT-TAB-V1 | Auto Leave Fix", 8)
 
 makeToggle(settingsPage, "Auto Scan Units (20s)", 9, function(v)
     state.autoScanUnits = v
@@ -2574,6 +2563,7 @@ makeText(aboutPage, autoExecStatus, 5, 11, Color3.fromRGB(170, 175, 190), false)
 local function showTab(name)
 	activeTab = name
 	mainPage.Visible = (name == "main")
+	eventPage.Visible = (name == "event")
 	playerPage.Visible = (name == "player")
 	settingsPage.Visible = (name == "settings")
 	aboutPage.Visible = (name == "about")
@@ -2582,6 +2572,9 @@ end
 
 tabMain.MouseButton1Click:Connect(function()
 	showTab("main")
+end)
+tabEvent.MouseButton1Click:Connect(function()
+	showTab("event")
 end)
 tabPlayer.MouseButton1Click:Connect(function()
 	showTab("player")
@@ -3425,7 +3418,7 @@ task.spawn(function()
 			end
 		end
 		if #ids == 0 then
-			placeStatus.Text = "No unit IDs: enter yours or press Scan Units"
+			placeStatus.Text = "No unit IDs found automatically"
 		else
 			placeStatus.Text = ("IDs: %d | Spots: %d | Placed: %d | %s"):format(#ids, #learned.positions + #goodSpots, placedCount, placeLastError:sub(1, 35))
 		end
