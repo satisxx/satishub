@@ -3385,12 +3385,48 @@ end
 -- A rejected ID is cooled down briefly, while other IDs still get a turn.
 local nextUnitIndex = 0
 local idRetryAfter = {}
+-- Unit limits vary by character. Learn the limit from the game's own notification.
+-- Once an ID reaches its limit, skip it for this match instead of retrying forever.
+local unitCaps = {}
+local unitAtCap = {}
+local activePlaceId = nil
+local activePlaceAt = 0
+local playerGuiForCaps = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+local function observePlaceNotice(text)
+    if type(text) ~= "string" then return end
+    local max = tonumber(text:lower():match("cannot place more than%s+(%d+)%s+of this unit"))
+    if max and activePlaceId and os.clock() - activePlaceAt < 4 then
+        unitCaps[activePlaceId] = max
+        unitAtCap[activePlaceId] = true
+        idRetryAfter[activePlaceId] = math.huge
+        placeNotice(("Unit limit reached (%d). Skipping this unit for the match."):format(max))
+    end
+end
+-- Event-based notification reader: does not disable any game connections.
+-- Covers new labels and text updates on labels reused by the game's UI.
+local seenNoticeLabels = setmetatable({}, {__mode = "k"})
+local function observeNoticeLabel(obj)
+    if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) or seenNoticeLabels[obj] then return end
+    seenNoticeLabels[obj] = true
+    observePlaceNotice(obj.Text)
+    obj:GetPropertyChangedSignal("Text"):Connect(function()
+        if alive() then observePlaceNotice(obj.Text) end
+    end)
+end
+if playerGuiForCaps then
+    for _, obj in ipairs(playerGuiForCaps:GetDescendants()) do
+        observeNoticeLabel(obj)
+    end
+    playerGuiForCaps.DescendantAdded:Connect(function(obj)
+        if alive() then observeNoticeLabel(obj) end
+    end)
+end
 local function pickId(ids)
     if #ids == 0 then return nil end
     for _ = 1, #ids do
         nextUnitIndex = (nextUnitIndex % #ids) + 1
         local id = ids[nextUnitIndex]
-        if (idRetryAfter[id] or 0) <= os.clock() then
+        if not unitAtCap[id] and (idRetryAfter[id] or 0) <= os.clock() then
             return id
         end
     end
@@ -3400,10 +3436,16 @@ end
 -- Places one unit and checks if it really appeared (your unit count goes up)
 -- Returns success, reason. Do not treat a nil server response as confirmed placement.
 local function tryPlace(id, pos)
+    if unitAtCap[id] then return false, "Unit placement limit reached" end
     local before = #myUnits()
+    activePlaceId = id
+    activePlaceAt = os.clock()
     env.SatisHubAutoPlacing = true
     local ok, res = invokeRet("spawn_unit", id, CFrame.new(pos))
     env.SatisHubAutoPlacing = nil
+    -- Let client notifications arrive without spamming additional requests.
+    task.wait(0.25)
+    if unitAtCap[id] then return false, "Unit placement limit reached" end
     if not ok then
         return false, "Remote failed or unavailable: " .. tostring(res)
     end
@@ -3416,6 +3458,7 @@ local function tryPlace(id, pos)
                 return false, "Placement cancelled"
             end
             task.wait(0.15)
+            if unitAtCap[id] then return false, "Unit placement limit reached" end
             if #myUnits() > before then
                 addUnitId(id, true, true)
                 return true
@@ -3475,6 +3518,7 @@ task.spawn(function()
 			pendingBad = {}
 			idFails = {}
             idRetryAfter = {}
+            -- Keep learned unit limits when toggling Auto Place in the same match.
             nextUnitIndex = 0
 			failStreak = 0
 		end
@@ -3526,7 +3570,9 @@ task.spawn(function()
 					failStreak = failStreak + 1
 					idFails[id] = (idFails[id] or 0) + 1
                     -- Avoid retrying one failing unit endlessly. Do not permanently ban it.
-                    idRetryAfter[id] = os.clock() + math.min(30, 4 * idFails[id])
+                    if not unitAtCap[id] then
+                        idRetryAfter[id] = os.clock() + math.min(30, 4 * idFails[id])
+                    end
 					pendingBad[#pendingBad + 1] = { pos = pos, t = os.clock() }
 					if failStreak >= NO_MONEY_AFTER then
 						-- many fails in a row: probably no money / unit limit, not the spots
