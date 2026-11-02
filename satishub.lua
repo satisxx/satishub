@@ -3831,135 +3831,94 @@ local function groundOk(hit, filter)
 end
 
 local function pickSpot()
-	local playerCenters = {}
-	local otherCenters = {}
-	local function addTo(list, p)
-		for _, c in ipairs(list) do
-			if flatDist(c, p) < 2 then
-				return
-			end
-		end
-		list[#list + 1] = p
-	end
-	for _, p in ipairs(learned.positions) do
-		addTo(playerCenters, p)
-	end
-	for _, p in ipairs(goodSpots) do
-		addTo(playerCenters, p)
-	end
-	-- Learned spots are always preferred. Before the script learns one, use the
-	-- local player's own units / plot / character position first.
-	if #learned.positions == 0 and #goodSpots == 0 then
-		local okPC, pcList = pcall(findPlayerCenters)
-		if okPC and type(pcList) == "table" then
-			for _, p in ipairs(pcList) do
-				addTo(playerCenters, p)
-			end
-		end
-	end
-    local folder = getUnitsFolder()
-    if #learned.positions == 0 and #goodSpots == 0 and folder then
-        for _, u in ipairs(folder:GetChildren()) do
-            if unitOwnedByMe(u) == true then
-                local up = unitGroundPosition(u)
-                if up then addTo(playerCenters, up) end
-            end
-        end
-    end
-	-- When the local character stands on a high ledge, nearby placed friendly
-    -- units are much more reliable anchors than the character's root.
-    -- Other players' units / generic pads are only a fallback.
-	local useFallback = #playerCenters == 0 or (#learned.positions == 0 and #goodSpots == 0 and failStreak >= 4)
-	if useFallback then
-		if folder then
-			local n = 0
-			for _, u in ipairs(folder:GetChildren()) do
-				n = n + 1
-				if n > 30 then
-					break
-				end
-				local p = unitPivotPosition(u)
-				if p then
-					addTo(otherCenters, p)
-				end
-			end
-		end
-		local okAC, acList = pcall(findAutoCenters)
-		if okAC and type(acList) == "table" then
-			for _, p in ipairs(acList) do
-				addTo(otherCenters, p)
-			end
-		end
-	end
+    -- Search from actual successful placements first, then owned units, then
+    -- map/other-unit anchors. A tiny UI radius cannot trap placement forever.
     local centers = {}
-    for _, p in ipairs(playerCenters) do addTo(centers, p) end
-    -- On complex maps the character may be standing on a roof, an elevated
-    -- path, or outside any placement zone. Broaden the search towards actual
-    -- unit locations once local attempts repeatedly fail.
-    if useFallback and failStreak >= 3 then
-        for i, p in ipairs(otherCenters) do
-            if i > 18 then break end
-            addTo(centers, p)
+    local function addCenter(p)
+        if typeof(p) ~= "Vector3" then return end
+        for _, previous in ipairs(centers) do
+            if flatDist(previous, p) < 2.5 then return end
         end
+        if #centers < 65 then centers[#centers + 1] = p end
     end
-    if #centers == 0 then
-        -- Do not spin forever with zero candidate centers.
-        local ok, points = pcall(findAutoCenters)
-        if ok and type(points) == "table" then
-            for i, p in ipairs(points) do
-                if i > 16 then break end
-                addTo(centers, p)
+    for _, p in ipairs(goodSpots) do addCenter(p) end
+    for _, p in ipairs(learned.positions) do addCenter(p) end
+
+    local folder = getUnitsFolder()
+    if folder then
+        for _, unit in ipairs(folder:GetChildren()) do
+            if unitOwnedByMe(unit) == true then
+                addCenter(unitGroundPosition(unit) or unitPivotPosition(unit))
             end
         end
     end
+    local okPC, pcList = pcall(findPlayerCenters)
+    if okPC and type(pcList) == "table" then
+        for _, p in ipairs(pcList) do addCenter(p) end
+    end
+
+    -- Other units provide known navigable surfaces. They're fallback anchors,
+    -- not evidence that the local player is allowed to place on that plot.
+    if #centers < 3 or failStreak >= 2 then
+        if folder then
+            local n = 0
+            for _, unit in ipairs(folder:GetChildren()) do
+                n = n + 1
+                if n > 45 then break end
+                addCenter(unitGroundPosition(unit) or unitPivotPosition(unit))
+            end
+        end
+        local okAuto, autoList = pcall(findAutoCenters)
+        if okAuto and type(autoList) == "table" then
+            for _, p in ipairs(autoList) do addCenter(p) end
+        end
+    end
+    local char = Players.LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then addCenter(root.Position) end
     if #centers == 0 then return nil end
 
-	prepareRay()
-	local filter = buildGroundFilter()
-	-- every failure in a row widens the search a bit, so it stops hitting the same area
-	local radius = math.min(48, (tonumber(state.placeRadius) or 15) * (1 + math.min(failStreak, 5) * 0.18))
-	local char = Players.LocalPlayer.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	local rootPos = root and root.Position
-
-	local occupied = {}
-	if folder then
-		for _, u in ipairs(folder:GetChildren()) do
-			local p = unitGroundPosition(u)
-			if p then
-				occupied[#occupied + 1] = p
-			end
-		end
-	end
-
-	for attempt = 1, 38 do
-        -- Different maps use different floor names/materials. Prefer learned
-        -- ground briefly, then explore flat surfaces near existing units.
-        local useFilter = (attempt <= 12) and filter or nil
-		local center = centers[math.random(1, #centers)]
-		local angle = math.random() * math.pi * 2
-		local dist = math.sqrt(math.random()) * radius
-		local flat = Vector3.new(center.X + math.cos(angle) * dist, center.Y, center.Z + math.sin(angle) * dist)
-
-		local hit = rayDown(flat, 140, 430)
-		if hit and groundOk(hit, useFilter) then
-			-- keep the same height convention the game used for the spot we learned from
-			local cHit = rayDown(center, 140, 430)
-			local centerGroundY = cHit and cHit.Position.Y or center.Y
-			local offset = cHit and (center.Y - cHit.Position.Y) or 0
-			-- The character root is not a unit origin; place at ground level there.
-			if rootPos and flatDist(center, rootPos) < 0.01 and math.abs(center.Y - rootPos.Y) < 0.01 then
-				offset = 0
-			end
-			if math.abs(hit.Position.Y - centerGroundY) <= 28 then
-				local pos = Vector3.new(flat.X, hit.Position.Y + offset, flat.Z)
-				if farFrom(occupied, pos, MIN_SPACING) and not isBad(pos) then
-					return pos
-				end
-			end
-		end
-	end
-	return nil
+    prepareRay()
+    local occupied = {}
+    if folder then
+        for _, unit in ipairs(folder:GetChildren()) do
+            local p = unitGroundPosition(unit)
+            if p then occupied[#occupied + 1] = p end
+        end
+    end
+    local radiusSetting = math.clamp(tonumber(state.placeRadius) or 15, 1, 65)
+    local radius = math.min(75, math.max(15, radiusSetting) + math.min(failStreak, 7) * 6)
+    -- First sample useful nearby spots; progressively cover a larger region.
+    for attempt = 1, 64 do
+        local center = centers[math.random(1, #centers)]
+        local angle = (attempt * 2.39996323) + math.random() * 0.25
+        local ring = math.sqrt((attempt % 23 + 1) / 23)
+        local dist = math.max(3.5, ring * radius)
+        local flat = Vector3.new(center.X + math.cos(angle) * dist, center.Y, center.Z + math.sin(angle) * dist)
+        local hit = rayDown(flat, 170, 480)
+        if hit and hit.Instance and hit.Normal.Y >= 0.72 then
+            local pos = hit.Position
+            -- Learned placement positions preserve the CFrame height convention.
+            local offset = 0
+            if #goodSpots > 0 then
+                local nearest = goodSpots[1]
+                local nearestDist = flatDist(nearest, pos)
+                for _, known in ipairs(goodSpots) do
+                    local d = flatDist(known, pos)
+                    if d < nearestDist then nearest, nearestDist = known, d end
+                end
+                if nearestDist < 18 then
+                    local knownHit = rayDown(nearest, 170, 480)
+                    if knownHit then offset = math.clamp(nearest.Y - knownHit.Position.Y, -4, 8) end
+                end
+            end
+            pos = Vector3.new(pos.X, pos.Y + offset, pos.Z)
+            if farFrom(occupied, pos, MIN_SPACING) and not isBad(pos) then
+                return pos
+            end
+        end
+    end
+    return nil
 end
 
 -- Cycle through the available IDs rather than randomly picking the same one.
@@ -4121,7 +4080,7 @@ task.spawn(function()
 				end
 				local pos = pickSpot()
 				if not pos then
-                    placeNotice("No valid placement ground found. Place one unit manually or adjust radius.")
+                    placeNotice("No free ground found nearby; expanding search. If this persists, place one manually.")
 					failStreak = failStreak + 1
 					break
 				end
