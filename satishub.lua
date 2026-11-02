@@ -87,6 +87,7 @@ local state = {
 	savedKey = "",
 	rgbEnabled = true,
 	themeColor = "",
+    fpsBoost = false,
     farmingStats = {wins = 0, losses = 0, games = 0, gold = 0, gems = 0, xp = 0, seconds = 0},
 }
 
@@ -2698,9 +2699,16 @@ end
 local settingsPage = makePage(body, 4)
 settingsPage.Visible = false
 
+-- Keep FPS Boost enabled across queued teleports; a fresh/manual execution starts with it OFF.
+if not fromQueue then
+    state.fpsBoost = false
+    saveSettings()
+end
 makeToggle(settingsPage, "FPS BOOST", 0, function(v)
+    state.fpsBoost = v
+    saveSettings()
     setFpsBoost(v)
-end)
+end, fromQueue and state.fpsBoost == true)
 
 
 makeLabel(settingsPage, "GUI color (background)", 1)
@@ -3490,7 +3498,7 @@ local function buildGroundFilter()
 	local f = { parts = {}, parents = {}, names = {}, mats = {} }
 	local any = false
 	local function learnFrom(p)
-		local hit = rayDown(p, 4, 12)
+		local hit = rayDown(p, 35, 100)
 		if hit and hit.Instance then
 			any = true
 			local inst = hit.Instance
@@ -3582,9 +3590,18 @@ local function pickSpot()
 			end
 		end
 	end
-	local folder = getUnitsFolder()
-	-- Other players' units / generic pads are only a fallback. If the player's
-	-- own area keeps failing, widen the search to these too.
+    local folder = getUnitsFolder()
+    if #learned.positions == 0 and #goodSpots == 0 and folder then
+        for _, u in ipairs(folder:GetChildren()) do
+            if unitOwnedByMe(u) == true then
+                local up = unitGroundPosition(u)
+                if up then addTo(playerCenters, up) end
+            end
+        end
+    end
+	-- When the local character stands on a high ledge, nearby placed friendly
+    -- units are much more reliable anchors than the character's root.
+    -- Other players' units / generic pads are only a fallback.
 	local useFallback = #playerCenters == 0 or (#learned.positions == 0 and #goodSpots == 0 and failStreak >= 4)
 	if useFallback then
 		if folder then
@@ -3622,7 +3639,7 @@ local function pickSpot()
 	prepareRay()
 	local filter = buildGroundFilter()
 	-- every failure in a row widens the search a bit, so it stops hitting the same area
-	local radius = (tonumber(state.placeRadius) or 15) * (1 + math.min(failStreak, 12) * 0.25)
+	local radius = math.min(48, (tonumber(state.placeRadius) or 15) * (1 + math.min(failStreak, 5) * 0.18))
 	local char = Players.LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	local rootPos = root and root.Position
@@ -3637,25 +3654,26 @@ local function pickSpot()
 		end
 	end
 
-	for attempt = 1, 45 do
-		-- first 30 tries: only floor like the one you placed on; last 15: any flat floor
-		local useFilter = (attempt <= 30) and filter or nil
+	for attempt = 1, 85 do
+        -- Different maps use different floor names/materials. Prefer learned
+        -- ground briefly, then explore flat surfaces near existing units.
+        local useFilter = (attempt <= 20) and filter or nil
 		local center = centers[math.random(1, #centers)]
 		local angle = math.random() * math.pi * 2
 		local dist = math.sqrt(math.random()) * radius
 		local flat = Vector3.new(center.X + math.cos(angle) * dist, center.Y, center.Z + math.sin(angle) * dist)
 
-		local hit = rayDown(flat, 25, 80)
+		local hit = rayDown(flat, 140, 430)
 		if hit and groundOk(hit, useFilter) then
 			-- keep the same height convention the game used for the spot we learned from
-			local cHit = rayDown(center, 20, 60)
+			local cHit = rayDown(center, 140, 430)
 			local centerGroundY = cHit and cHit.Position.Y or center.Y
 			local offset = cHit and (center.Y - cHit.Position.Y) or 0
 			-- The character root is not a unit origin; place at ground level there.
 			if rootPos and flatDist(center, rootPos) < 0.01 and math.abs(center.Y - rootPos.Y) < 0.01 then
 				offset = 0
 			end
-			if math.abs(hit.Position.Y - centerGroundY) <= 8 then
+			if math.abs(hit.Position.Y - centerGroundY) <= 28 then
 				local pos = Vector3.new(flat.X, hit.Position.Y + offset, flat.Z)
 				if farFrom(occupied, pos, MIN_SPACING) and not isBad(pos) then
 					return pos
@@ -3676,10 +3694,17 @@ local unitCaps = {}
 local unitAtCap = {}
 local activePlaceId = nil
 local activePlaceAt = 0
+local activePlacePosition = nil
 local playerGuiForCaps = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
 local function observePlaceNotice(text)
     if type(text) ~= "string" then return end
     local max = tonumber(text:lower():match("cannot place more than%s+(%d+)%s+of this unit"))
+    if text:lower():find("cannot place unit here", 1, true)
+        and activePlacePosition and os.clock() - activePlaceAt < 4 then
+        badSpots[#badSpots + 1] = {pos = activePlacePosition, t = os.clock()}
+        if #badSpots > 250 then table.remove(badSpots, 1) end
+        placeNotice("Invalid ground; trying another position")
+    end
     if max and activePlaceId and os.clock() - activePlaceAt < 4 then
         unitCaps[activePlaceId] = max
         unitAtCap[activePlaceId] = true
@@ -3725,6 +3750,7 @@ local function tryPlace(id, pos)
     local before = #myUnits()
     activePlaceId = id
     activePlaceAt = os.clock()
+    activePlacePosition = pos
     env.SatisHubAutoPlacing = true
     local ok, res = invokeRet("spawn_unit", id, CFrame.new(pos))
     env.SatisHubAutoPlacing = nil
@@ -3869,7 +3895,7 @@ task.spawn(function()
 			end
 		end
 		-- when it keeps failing (probably no money) slow down
-		task.wait(PLACE_INTERVALO * ((failStreak >= NO_MONEY_AFTER) and 3 or 1))
+		task.wait(PLACE_INTERVALO * ((failStreak >= NO_MONEY_AFTER) and 7 or 1))
 	end
 end)
 
