@@ -281,7 +281,7 @@ end
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-V3.7-AnimePurple"
+local SCRIPT_BUILD = "SatisHub-V3.9.4-AnimePurple"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -1724,7 +1724,7 @@ do
     version.Size = UDim2.fromOffset(83, 48)
     version.Position = UDim2.new(1, -96, 0, 0)
     version.BackgroundTransparency = 1
-    version.Text = "v3.9.2"
+    version.Text = "v3.9.4"
     version.Font = Enum.Font.GothamBold
     version.TextColor3 = Color3.fromRGB(208, 156, 255)
     version.TextSize = 15
@@ -3730,121 +3730,292 @@ do
     end
 end
 
--- ===== Auto Leave V3.9.2: bounded recovery for stuck result screens =====
--- A finished match can leave InvokeServer pending (especially after repeated runs).
--- Keep attempts bounded, and never call during an active match.
+-- ===== Auto Leave V3.9.4: event + real results GUI + controlled recovery =====
+-- Game returns to lobby using ReplicatedStorage.endpoints.client_to_server.teleport_back_to_lobby.
+-- Server decides whether teleport can occur. Never hammer the server or hide failures.
+-- Every new script execution gets a fresh per-round state; the old run exits through alive().
 local function startAutoLeave()
     local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui", 15)
+    if not playerGui then
+        warn("[SatisHub] Auto Leave: PlayerGui unavailable")
+        return
+    end
+
+    local active = false
     local teleporting = false
-    local finishing = false
-    local startedAt = 0
-    local attempts = 0
-    local firstPendingAt = nil
-    local lastAttemptAt = 0
-    local MAX_ATTEMPTS = 3
-    local RETRY_GAP = 20
+    local endSource = nil
+    local endedAt = 0
+    local resultsWereVisible = false
+    local resultsGoneAt = nil
+    local matchSequence = 0
+    local remoteAttempts = 0
+    local guiAttempts = 0
+    local remotePending = false
+    local remotePendingAt = 0
+    local remoteRequestedAt = 0
+    local nextRemoteLookupAt = 0
+    local remoteRejected = false
+    local pendingTimeoutLogged = false
+    local finalWarningLogged = false
 
-    pcall(function()
-        Players.LocalPlayer.OnTeleport:Connect(function(phase)
-            if phase == Enum.TeleportState.Started or phase == Enum.TeleportState.InProgress then
-                teleporting = true
-                print("[SatisHub] Auto Leave: teleport started")
-            end
-        end)
-    end)
+    local FIRST_DELAY = 3
+    local GUI_FALLBACK_DELAY = 14
+    local REMOTE_RETRY_DELAY = 28
+    local MAX_REMOTE_REQUESTS = 2
 
-    local function visible(obj)
+    local function note(s)
+        print("[SatisHub] Auto Leave V3.9.4: " .. s)
+    end
+
+    local function isVisible(obj)
         local node = obj
         while node and node ~= playerGui do
-            if node:IsA("GuiObject") and not node.Visible then return false end
             if node:IsA("ScreenGui") and not node.Enabled then return false end
+            if node:IsA("GuiObject") and not node.Visible then return false end
             node = node.Parent
         end
         return node == playerGui
     end
 
-    local function endScreenShown()
-        if not playerGui then return false end
-        local lobby, replay = false, false
+    -- Some games put text inside a separate TextLabel rather than on the clickable button.
+    local function findButtonParent(obj)
+        local node = obj
+        while node and node ~= playerGui do
+            if node:IsA("GuiButton") then return node end
+            node = node.Parent
+        end
+        return nil
+    end
+
+    -- Return: end-of-match UI visible, actual clickable Return to Lobby button (if found).
+    local function inspectResults()
+        local lobby, replay, waiting = false, false, false
+        local lobbyButton = nil
         for _, obj in ipairs(playerGui:GetDescendants()) do
-            -- Some result GUIs use TextLabels inside image buttons.
-            if (obj:IsA("TextButton") or obj:IsA("TextLabel")) and visible(obj) then
-                local t = tostring(obj.Text):lower():gsub("%s+", " ")
-                if t:find("return to lobby", 1, true) then lobby = true end
-                if t == "replay" then replay = true end
-                if lobby and replay then return true end
+            if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and isVisible(obj) then
+                local label = tostring(obj.Text):lower():gsub("%s+", " ")
+                if label:find("return to lobby", 1, true) then
+                    lobby = true
+                    lobbyButton = lobbyButton or findButtonParent(obj)
+                elseif label == "replay" then
+                    replay = true
+                elseif label:find("waiting for players", 1, true)
+                    or label:find("waiting for server", 1, true) then
+                    waiting = true
+                end
             end
         end
+        return (lobby and (replay or waiting)), lobbyButton
+    end
+
+    local function armNextMatch(reason)
+        matchSequence = matchSequence + 1 -- invalidates callbacks from earlier matches
+        active = false
+        endSource = nil
+        endedAt = 0
+        resultsWereVisible = false
+        resultsGoneAt = nil
+        remoteAttempts = 0
+        guiAttempts = 0
+        remotePending = false
+        remotePendingAt = 0
+        remoteRequestedAt = 0
+        nextRemoteLookupAt = 0
+        remoteRejected = false
+        pendingTimeoutLogged = false
+        finalWarningLogged = false
+        matchEnding = false
+        replayVoted = false
+        startVoted = false
+        cardNextAt = 0
+        skipNextAt = 0
+        note("ready for another match (" .. tostring(reason) .. ")")
+    end
+
+    local function markFinished(reason)
+        if not alive() or teleporting or active or not state.autoLeave then return end
+        active = true
+        endSource = reason
+        endedAt = os.clock()
+        resultsGoneAt = nil
+        matchEnding = true -- pause auto start, wave, cards, place and upgrade
+        note("match ended via " .. reason .. "; waiting for lobby action")
+    end
+
+    -- Roblox confirms the teleport via this event, not by the return value of InvokeServer().
+    pcall(function()
+        Players.LocalPlayer.OnTeleport:Connect(function(phase)
+            if phase == Enum.TeleportState.Started or phase == Enum.TeleportState.InProgress then
+                teleporting = true
+                note("teleport started")
+            elseif phase == Enum.TeleportState.Failed then
+                teleporting = false
+                warn("[SatisHub] Auto Leave: teleport failed (server/client)")
+            end
+        end)
+    end)
+
+    -- Hook the event even if ReplicatedStorage creates it a little after this script runs.
+    task.spawn(function()
+        local eps = ReplicatedStorage:WaitForChild("endpoints", 20)
+        local events = eps and eps:WaitForChild("server_to_client", 20)
+        local remote = events and events:WaitForChild("game_finished", 20)
+        if remote and remote:IsA("RemoteEvent") then
+            remote.OnClientEvent:Connect(function()
+                if not alive() or not state.autoLeave then return end
+                if not active then markFinished("game_finished") end
+            end)
+            note("game_finished listener attached")
+        else
+            warn("[SatisHub] Auto Leave: game_finished event missing, using results UI")
+        end
+    end)
+
+    local function sendRemote()
+        if not alive() or teleporting or not active or not state.autoLeave then return end
+        if remoteAttempts >= MAX_REMOTE_REQUESTS or remotePending then return end
+        if os.clock() < nextRemoteLookupAt then return end
+        local eps = ReplicatedStorage:FindFirstChild("endpoints")
+        local cts = eps and eps:FindFirstChild("client_to_server")
+        local remote = cts and cts:FindFirstChild("teleport_back_to_lobby")
+        if not (remote and remote:IsA("RemoteFunction")) then
+            nextRemoteLookupAt = os.clock() + 5 -- no console spam if created late
+            warn("[SatisHub] Auto Leave: teleport_back_to_lobby RemoteFunction not found")
+            return
+        end
+        remoteAttempts = remoteAttempts + 1
+        remoteRequestedAt = os.clock()
+        remotePendingAt = remoteRequestedAt
+        remotePending = true
+        pendingTimeoutLogged = false
+        local thisSequence = matchSequence
+        local attemptNumber = remoteAttempts
+        note("sending lobby request " .. attemptNumber .. "/" .. MAX_REMOTE_REQUESTS)
+        task.spawn(function()
+            local ok, reply = pcall(function() return remote:InvokeServer() end)
+            if not alive() or matchSequence ~= thisSequence then return end
+            if remoteAttempts == attemptNumber then remotePending = false end
+            if ok then
+                if reply == false then remoteRejected = true end
+                note("server returned " .. tostring(reply) .. " (not a teleport confirmation)")
+            else
+                remoteRejected = true
+                warn("[SatisHub] Auto Leave: remote error " .. tostring(reply))
+            end
+        end)
+    end
+
+    -- Fallback: activate the *game's own* green Return to Lobby GUI button,
+    -- which can perform extra UI checks before calling its server remote.
+    -- Uses Roblox testing-input services ONLY if accessible; never hooks __namecall.
+    local function clickLobbyButton(button)
+        if not button or not button.Parent or not isVisible(button) then
+            warn("[SatisHub] Auto Leave: results button not clickable/visible")
+            return false
+        end
+        local pos = button.AbsolutePosition + button.AbsoluteSize * 0.5
+        if button.AbsoluteSize.X < 10 or button.AbsoluteSize.Y < 10 then return false end
+
+        -- Preferred API on clients that expose VirtualInput (often unavailable in executors).
+        local canCreate, virtualInput = pcall(function()
+            return UserInputService:CreateVirtualInput()
+        end)
+        if canCreate and virtualInput then
+            local ok = pcall(function()
+                virtualInput:SendMousePosition(pos)
+                virtualInput:SendMouseButton(pos, Enum.UserInputType.MouseButton1, true, 0)
+                task.wait(0.08)
+                virtualInput:SendMouseButton(pos, Enum.UserInputType.MouseButton1, false, 0)
+            end)
+            if ok then return true end
+        end
+
+        local okManager, vim = pcall(function()
+            return game:GetService("VirtualInputManager")
+        end)
+        if okManager and vim then
+            local x, y = math.floor(pos.X), math.floor(pos.Y)
+            local downOk = pcall(function()
+                vim:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            end)
+            if downOk then
+                task.wait(0.08)
+                pcall(function() vim:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
+                return true
+            end
+        end
+        warn("[SatisHub] Auto Leave: virtual GUI click unavailable in this executor")
         return false
     end
 
-    local function beginEnding(reason)
-        if finishing or teleporting or not alive() or not state.autoLeave then return end
-        finishing = true
-        matchEnding = true
-        startedAt = os.clock()
-        print("[SatisHub] Auto Leave: results detected (" .. tostring(reason) .. ")")
-    end
-
-    local folder = endpoints and endpoints:FindFirstChild("server_to_client")
-    local event = folder and folder:FindFirstChild("game_finished")
-    if event and event:IsA("RemoteEvent") then
-        event.OnClientEvent:Connect(function()
-            if alive() and state.autoLeave then beginEnding("game_finished") end
-        end)
-    else
-        warn("[SatisHub] Auto Leave: waiting for results GUI (game_finished missing)")
-    end
-
-    local function attemptLeave()
-        attempts = attempts + 1
-        lastAttemptAt = os.clock()
-        local thisAttempt = attempts
-        local remoteFolder = ReplicatedStorage:FindFirstChild("endpoints")
-        remoteFolder = remoteFolder and remoteFolder:FindFirstChild("client_to_server")
-        local remote = remoteFolder and remoteFolder:FindFirstChild("teleport_back_to_lobby")
-        if not remote or not remote:IsA("RemoteFunction") then
-            warn("[SatisHub] Auto Leave: request " .. thisAttempt .. ": remote not available")
-            return
-        end
-        if not firstPendingAt then firstPendingAt = os.clock() end
-        print(("[SatisHub] Auto Leave: sending request %d/%d"):format(thisAttempt, MAX_ATTEMPTS))
-        task.spawn(function()
-            local ok, reply = pcall(function() return remote:InvokeServer() end)
-            if not alive() then return end
-            if ok then
-                print(("[SatisHub] Auto Leave: reply to request %d: %s"):format(thisAttempt, tostring(reply)))
-            else
-                warn(("[SatisHub] Auto Leave: request %d failed: %s"):format(thisAttempt, tostring(reply)))
-            end
-        end)
-    end
-
     task.spawn(function()
-        local seen = 0
+        local visibleTicks = 0
+        local lastToggle = state.autoLeave
+        note("monitor started; Auto Leave=" .. tostring(lastToggle))
         while alive() do
-            if teleporting or not state.autoLeave then
-                seen = 0
-            else
-                local hasResults = endScreenShown()
-                seen = hasResults and (seen + 1) or 0
-                if not finishing and seen >= 2 then beginEnding("results GUI") end
-                if finishing and (os.clock() - startedAt) >= 3 then
-                    if attempts == 0 and hasResults then
-                        attemptLeave()
-                    elseif attempts > 0 and attempts < MAX_ATTEMPTS and hasResults
-                        and os.clock() - lastAttemptAt >= RETRY_GAP then
-                        warn("[SatisHub] Auto Leave: result screen still visible; limited retry")
-                        attemptLeave()
-                    elseif attempts == MAX_ATTEMPTS and hasResults
-                        and os.clock() - lastAttemptAt >= RETRY_GAP then
-                        warn("[SatisHub] Auto Leave: server has not teleported. Try Return to Lobby manually; further requests disabled.")
-                        -- Avoid repeating this warning indefinitely.
-                        lastAttemptAt = os.clock() + 999999
+            if not teleporting then
+                local now = os.clock()
+                local shown, lobbyButton = inspectResults()
+                visibleTicks = shown and visibleTicks + 1 or 0
+
+                if state.autoLeave ~= lastToggle then
+                    lastToggle = state.autoLeave
+                    if not lastToggle then armNextMatch("toggle off") end
+                end
+
+                if shown then
+                    resultsWereVisible = true
+                    resultsGoneAt = nil
+                elseif active then
+                    resultsGoneAt = resultsGoneAt or now
+                end
+
+                if state.autoLeave and not active and visibleTicks >= 2 then
+                    markFinished("results GUI")
+                end
+
+                if state.autoLeave and active then
+                    local elapsed = now - endedAt
+                    if remotePending and now - remotePendingAt >= 12 and not pendingTimeoutLogged then
+                        pendingTimeoutLogged = true
+                        remotePending = false -- a hung InvokeServer must not block the fallback forever
+                        warn("[SatisHub] Auto Leave: remote did not answer within 12s")
+                    end
+
+                    if remoteAttempts == 0 and elapsed >= FIRST_DELAY then
+                        sendRemote()
+                    end
+
+                    if shown and guiAttempts == 0
+                        and (elapsed >= GUI_FALLBACK_DELAY or (remoteRejected and elapsed >= 5))
+                        and not teleporting then
+                        guiAttempts = 1 -- never click more than once per end screen
+                        if clickLobbyButton(lobbyButton) then
+                            note("tried the game's Return to Lobby button")
+                        end
+                    end
+
+                    if shown and remoteAttempts == 1 and not remotePending
+                        and elapsed >= REMOTE_RETRY_DELAY then
+                        warn("[SatisHub] Auto Leave: game still on results; final remote retry")
+                        sendRemote()
+                    end
+
+                    if elapsed >= 42 and not teleporting and shown and not finalWarningLogged then
+                        finalWarningLogged = true
+                        warn("[SatisHub] Auto Leave: server has not teleported this player; manual Return to Lobby may be required")
+                    end
+
+                    -- Same-server replay/new-match case: re-arm only after results
+                    -- disappear for several seconds, not after a brief GUI flicker.
+                    if resultsWereVisible and not shown and resultsGoneAt
+                        and now - resultsGoneAt >= 9 then
+                        armNextMatch("result screen closed")
+                        visibleTicks = 0
                     end
                 end
             end
-            task.wait(1.5)
+            task.wait(1.2) -- low-frequency GUI check; no remote spam
         end
     end)
 end
