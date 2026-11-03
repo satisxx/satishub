@@ -281,7 +281,7 @@ end
 
 -- ===== Auto execute on teleport / server change =====
 -- Unique marker used to detect whether the saved satishub.lua is this updated version.
-local SCRIPT_BUILD = "SatisHub-V3.9.4-AnimePurple"
+local SCRIPT_BUILD = "SatisHub-V3.9.5-AnimePurple"
 -- Option A: put your raw script URL here (GitHub raw, pastebin raw, etc.)
    local SCRIPT_URL = "https://raw.githubusercontent.com/satisxx/satishub/main/satishub.lua"
 -- Option B (if URL is empty): save this script in your executor's workspace folder.
@@ -1724,7 +1724,7 @@ do
     version.Size = UDim2.fromOffset(83, 48)
     version.Position = UDim2.new(1, -96, 0, 0)
     version.BackgroundTransparency = 1
-    version.Text = "v3.9.4"
+    version.Text = "v3.9.5"
     version.Font = Enum.Font.GothamBold
     version.TextColor3 = Color3.fromRGB(208, 156, 255)
     version.TextSize = 15
@@ -3730,7 +3730,7 @@ do
     end
 end
 
--- ===== Auto Leave V3.9.4: event + real results GUI + controlled recovery =====
+-- ===== Auto Leave V3.9.5: event + real results GUI + controlled recovery =====
 -- Game returns to lobby using ReplicatedStorage.endpoints.client_to_server.teleport_back_to_lobby.
 -- Server decides whether teleport can occur. Never hammer the server or hide failures.
 -- Every new script execution gets a fresh per-round state; the old run exits through alive().
@@ -3764,7 +3764,7 @@ local function startAutoLeave()
     local MAX_REMOTE_REQUESTS = 2
 
     local function note(s)
-        print("[SatisHub] Auto Leave V3.9.4: " .. s)
+        print("[SatisHub] Auto Leave V3.9.5: " .. s)
     end
 
     local function isVisible(obj)
@@ -4804,27 +4804,92 @@ end)
 end
 task.spawn(startUnitAutomation)
 
--- Auto join event: only one matchmaking request per activation.
--- Repeated requests every five seconds can overlap with a server teleport.
+-- Auto Join Event: reliable, bounded matchmaking retries.
+-- A failed/missing remote must NOT permanently consume the only join attempt.
+-- Successful requests enter a waiting state and do not spam the server.
+-- Only retry when still in a lobby; do not issue matchmaking during a match/end screen.
 task.spawn(function()
-    local autoJoinRequested = false
-    local autoJoinBusy = false
-	while alive() do
-		if not state.autoJoinEvent or (state.autoJoinDailyChallenge and dailyChallenge.canJoin()) then
-			autoJoinRequested = false
-		elseif not matchEnding and not autoJoinRequested and not autoJoinBusy then
-			autoJoinRequested = true
-			autoJoinBusy = true
-			local ok, result = invokeRet("request_matchmaking", "summer2_event")
-			autoJoinBusy = false
-			if not ok then
-				warn("[SatisHub] Auto Join: pedido falhou ou remote indisponivel: " .. tostring(result))
-			else
-				print("[SatisHub] Auto Join: pedido enviado; a aguardar pelo jogo.")
-			end
-		end
-		task.wait(1)
-	end
+    local attempts = 0
+    local nextAttemptAt = 0
+    local pending = false
+    local pendingSince = 0
+    local lastEnabled = false
+    local MAX_ATTEMPTS = 3
+    local FAILURE_COOLDOWN = 25
+    local PENDING_TIMEOUT = 75
+
+    local function appearsToBeInMatch()
+        local player = Players.LocalPlayer
+        local pg = player and player:FindFirstChildOfClass("PlayerGui")
+        if not pg then return false end
+        -- Read-only check: if a wave indicator is visible, we are already in a match.
+        for _, obj in ipairs(pg:GetDescendants()) do
+            if obj:IsA("TextLabel") and obj.Visible then
+                local value = tostring(obj.Text)
+                if value:match("^[Ww]ave%s*%d+") then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    while alive() do
+        local dailyHasPriority = state.autoJoinDailyChallenge and dailyChallenge.canJoin()
+        local enabled = state.autoJoinEvent and not dailyHasPriority
+        if not enabled then
+            attempts = 0
+            nextAttemptAt = 0
+            pending = false
+            pendingSince = 0
+        elseif not lastEnabled then
+            -- Toggle changed from OFF to ON: start a new controlled request cycle.
+            attempts = 0
+            nextAttemptAt = 0
+            pending = false
+        end
+        lastEnabled = enabled
+
+        if enabled and not matchEnding and not appearsToBeInMatch() then
+            local now = os.clock()
+            if pending and now - pendingSince >= PENDING_TIMEOUT then
+                pending = false
+                nextAttemptAt = now + FAILURE_COOLDOWN
+                warn("[SatisHub] Auto Join Event: no server transfer after 75s; will retry if still in lobby")
+            end
+            if not pending and attempts < MAX_ATTEMPTS and now >= nextAttemptAt then
+                local eps = ReplicatedStorage:FindFirstChild("endpoints")
+                local folder = eps and eps:FindFirstChild("client_to_server")
+                local remote = folder and folder:FindFirstChild("request_matchmaking")
+                attempts = attempts + 1
+                nextAttemptAt = now + FAILURE_COOLDOWN
+                if not (remote and remote:IsA("RemoteFunction")) then
+                    warn("[SatisHub] Auto Join Event: request_matchmaking unavailable (attempt " .. attempts .. "/" .. MAX_ATTEMPTS .. ")")
+                else
+                    pending = true
+                    pendingSince = now
+                    local thisAttempt = attempts
+                    task.spawn(function()
+                        local ok, result = pcall(function()
+                            return remote:InvokeServer("summer2_event")
+                        end)
+                        if not alive() or not enabled or thisAttempt ~= attempts then return end
+                        if not ok or result == false then
+                            pending = false
+                            nextAttemptAt = os.clock() + FAILURE_COOLDOWN
+                            warn("[SatisHub] Auto Join Event: matchmaking rejected/failed (" .. tostring(result) .. ")")
+                        else
+                            print("[SatisHub] Auto Join Event: matchmaking submitted; awaiting transfer")
+                        end
+                    end)
+                end
+                if attempts == MAX_ATTEMPTS then
+                    print("[SatisHub] Auto Join Event: reached max 3 requests; toggle OFF then ON to retry")
+                end
+            end
+        end
+        task.wait(2)
+    end
 end)
 
 -- Daily Challenge: send exactly one matchmaking request for each activation.
