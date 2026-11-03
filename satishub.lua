@@ -1724,7 +1724,7 @@ do
     version.Size = UDim2.fromOffset(83, 48)
     version.Position = UDim2.new(1, -96, 0, 0)
     version.BackgroundTransparency = 1
-    version.Text = "v3.9.6"
+    version.Text = "v3.9.7"
     version.Font = Enum.Font.GothamBold
     version.TextColor3 = Color3.fromRGB(208, 156, 255)
     version.TextSize = 15
@@ -4804,128 +4804,70 @@ end)
 end
 task.spawn(startUnitAutomation)
 
--- Auto Join Event: bounded requests, clear diagnostics, and lobby-state recovery.
--- This loop emits one diagnostic on start and on state changes so that a blocked
--- toggle cannot silently appear to be working.
+-- Auto Join Event: restored the previously working direct matchmaking logic.
+-- Do not infer match state by scanning unrelated UI text: lobby labels can
+-- otherwise be mistaken for match/results and silently block matchmaking.
 task.spawn(function()
-    local attempts, nextAttemptAt = 0, 0
-    local pending, pendingSince = false, 0
-    local lastEnabled = false
-    local lastReason = ""
-    local reasonLoggedAt = 0
-    local lobbyStableSince = nil
-    local MAX_ATTEMPTS = 3
-    local FAILURE_COOLDOWN = 25
-    local PENDING_TIMEOUT = 75
+    local requested = false
+    local busy = false
+    local retryAt = 0
+    local lastInfo = 0
+    local attempts = 0
+    local wasEnabled = false
 
-    local function gameUiState()
-        local player = Players.LocalPlayer
-        local pg = player and player:FindFirstChildOfClass("PlayerGui")
-        if not pg then return false, false, false end
-        local inMatch, results, lobbyUi = false, false, false
-        for _, obj in ipairs(pg:GetDescendants()) do
-            if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and obj.Visible then
-                local value = tostring(obj.Text):lower():gsub("%s+", " ")
-                if value:match("^wave%s*%d+") then inMatch = true end
-                if value:find("return to lobby", 1, true)
-                    or value:find("waiting for players", 1, true)
-                    or value:find("waiting for server", 1, true) then
-                    results = true
-                end
-                if value == "summon" or value == "play" or value == "units" then
-                    lobbyUi = true
-                end
-            end
-        end
-        return inMatch, results, lobbyUi
-    end
-
-    print("[SatisHub] Auto Join Event: monitor started; ON=" .. tostring(state.autoJoinEvent))
+    print("[SatisHub] Auto Join Event: direct monitor started")
     while alive() do
-        local now = os.clock()
-        local dailyHasPriority = state.autoJoinDailyChallenge and dailyChallenge.canJoin()
-        local enabled = state.autoJoinEvent and not dailyHasPriority
-        local inMatch, results, lobbyUi = gameUiState()
-
-        -- Match-ending flags are for the old match. Only recover when the lobby
-        -- UI is visible and the result/wave UI has been absent for several seconds.
-        if lobbyUi and not inMatch and not results then
-            lobbyStableSince = lobbyStableSince or now
-            if matchEnding and now - lobbyStableSince >= 8 then
-                matchEnding = false
-                print("[SatisHub] Auto Join Event: cleared stale match-ending state in lobby")
-            end
-        else
-            lobbyStableSince = nil
-        end
+        local enabled = state.autoJoinEvent and not
+            (state.autoJoinDailyChallenge and dailyChallenge.canJoin())
 
         if not enabled then
-            attempts, nextAttemptAt, pending, pendingSince = 0, 0, false, 0
-        elseif not lastEnabled then
-            attempts, nextAttemptAt, pending, pendingSince = 0, 0, false, 0
+            requested = false
+            busy = false
+            retryAt = 0
+            attempts = 0
+        elseif not wasEnabled then
+            requested = false
+            retryAt = 0
+            attempts = 0
         end
-        lastEnabled = enabled
+        wasEnabled = enabled
 
-        local reason
-        if not state.autoJoinEvent then
-            reason = "OFF"
-        elseif dailyHasPriority then
-            reason = "waiting for Daily Challenge priority"
-        elseif inMatch then
-            reason = "already in match"
-        elseif results then
-            reason = "results screen visible"
-        elseif matchEnding then
-            reason = "match-ending flag active"
-        elseif pending then
-            reason = "waiting for matchmaking/teleport"
-        elseif attempts >= MAX_ATTEMPTS then
-            reason = "attempt limit reached; switch OFF then ON to retry"
-        elseif now < nextAttemptAt then
-            reason = "cooldown before next attempt"
-        else
-            reason = "ready"
-        end
-        if reason ~= lastReason or now - reasonLoggedAt >= 60 then
-            print("[SatisHub] Auto Join Event: " .. reason)
-            lastReason, reasonLoggedAt = reason, now
-        end
+        if enabled and not matchEnding and not requested and not busy
+            and os.clock() >= retryAt and attempts < 3 then
+            requested = true
+            busy = true
+            attempts = attempts + 1
+            local thisAttempt = attempts
+            print("[SatisHub] Auto Join Event: sending matchmaking request " .. thisAttempt)
 
-        if enabled and not matchEnding and not inMatch and not results then
-            if pending and now - pendingSince >= PENDING_TIMEOUT then
-                pending = false
-                nextAttemptAt = now + FAILURE_COOLDOWN
-                warn("[SatisHub] Auto Join Event: still in lobby after 75s; will retry")
-            end
-            if not pending and attempts < MAX_ATTEMPTS and now >= nextAttemptAt then
-                local eps = ReplicatedStorage:FindFirstChild("endpoints")
-                local folder = eps and eps:FindFirstChild("client_to_server")
+            -- Do not block the monitor if InvokeServer yields indefinitely.
+            task.spawn(function()
+                local ep = ReplicatedStorage:FindFirstChild("endpoints")
+                local folder = ep and ep:FindFirstChild("client_to_server")
                 local remote = folder and folder:FindFirstChild("request_matchmaking")
-                attempts = attempts + 1
-                nextAttemptAt = now + FAILURE_COOLDOWN
-                if not (remote and remote:IsA("RemoteFunction")) then
-                    warn("[SatisHub] Auto Join Event: matchmaking remote missing, attempt " .. attempts)
-                else
-                    pending, pendingSince = true, now
-                    local thisAttempt = attempts
-                    print("[SatisHub] Auto Join Event: sending event request " .. thisAttempt .. "/" .. MAX_ATTEMPTS)
-                    task.spawn(function()
-                        local ok, reply = pcall(function()
-                            return remote:InvokeServer("summer2_event")
-                        end)
-                        if not alive() or not state.autoJoinEvent or thisAttempt ~= attempts then return end
-                        if not ok or reply == false then
-                            pending = false
-                            nextAttemptAt = os.clock() + FAILURE_COOLDOWN
-                            warn("[SatisHub] Auto Join Event: failed: " .. tostring(reply))
-                        else
-                            print("[SatisHub] Auto Join Event: request returned " .. tostring(reply) .. "; awaiting transfer")
-                        end
+                local ok, reply = false, "request_matchmaking missing"
+                if remote and remote:IsA("RemoteFunction") then
+                    ok, reply = pcall(function()
+                        return remote:InvokeServer("summer2_event")
                     end)
                 end
-            end
+                if not alive() or not state.autoJoinEvent then return end
+                busy = false
+                if not ok or reply == false then
+                    requested = false
+                    retryAt = os.clock() + 20
+                    warn("[SatisHub] Auto Join Event: request failed: " .. tostring(reply))
+                else
+                    -- A successful InvokeServer response is not proof of a
+                    -- completed teleport. Avoid repeated requests while queued.
+                    print("[SatisHub] Auto Join Event: request sent; response=" .. tostring(reply))
+                end
+            end)
+        elseif enabled and matchEnding and os.clock() - lastInfo > 15 then
+            print("[SatisHub] Auto Join Event: waiting for end-of-match state to clear")
+            lastInfo = os.clock()
         end
-        task.wait(2)
+        task.wait(1)
     end
 end)
 
