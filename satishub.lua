@@ -1724,7 +1724,7 @@ do
     version.Size = UDim2.fromOffset(83, 48)
     version.Position = UDim2.new(1, -96, 0, 0)
     version.BackgroundTransparency = 1
-    version.Text = "v3.9.5"
+    version.Text = "v3.9.6"
     version.Font = Enum.Font.GothamBold
     version.TextColor3 = Color3.fromRGB(208, 156, 255)
     version.TextSize = 15
@@ -4804,58 +4804,98 @@ end)
 end
 task.spawn(startUnitAutomation)
 
--- Auto Join Event: reliable, bounded matchmaking retries.
--- A failed/missing remote must NOT permanently consume the only join attempt.
--- Successful requests enter a waiting state and do not spam the server.
--- Only retry when still in a lobby; do not issue matchmaking during a match/end screen.
+-- Auto Join Event: bounded requests, clear diagnostics, and lobby-state recovery.
+-- This loop emits one diagnostic on start and on state changes so that a blocked
+-- toggle cannot silently appear to be working.
 task.spawn(function()
-    local attempts = 0
-    local nextAttemptAt = 0
-    local pending = false
-    local pendingSince = 0
+    local attempts, nextAttemptAt = 0, 0
+    local pending, pendingSince = false, 0
     local lastEnabled = false
+    local lastReason = ""
+    local reasonLoggedAt = 0
+    local lobbyStableSince = nil
     local MAX_ATTEMPTS = 3
     local FAILURE_COOLDOWN = 25
     local PENDING_TIMEOUT = 75
 
-    local function appearsToBeInMatch()
+    local function gameUiState()
         local player = Players.LocalPlayer
         local pg = player and player:FindFirstChildOfClass("PlayerGui")
-        if not pg then return false end
-        -- Read-only check: if a wave indicator is visible, we are already in a match.
+        if not pg then return false, false, false end
+        local inMatch, results, lobbyUi = false, false, false
         for _, obj in ipairs(pg:GetDescendants()) do
-            if obj:IsA("TextLabel") and obj.Visible then
-                local value = tostring(obj.Text)
-                if value:match("^[Ww]ave%s*%d+") then
-                    return true
+            if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and obj.Visible then
+                local value = tostring(obj.Text):lower():gsub("%s+", " ")
+                if value:match("^wave%s*%d+") then inMatch = true end
+                if value:find("return to lobby", 1, true)
+                    or value:find("waiting for players", 1, true)
+                    or value:find("waiting for server", 1, true) then
+                    results = true
+                end
+                if value == "summon" or value == "play" or value == "units" then
+                    lobbyUi = true
                 end
             end
         end
-        return false
+        return inMatch, results, lobbyUi
     end
 
+    print("[SatisHub] Auto Join Event: monitor started; ON=" .. tostring(state.autoJoinEvent))
     while alive() do
+        local now = os.clock()
         local dailyHasPriority = state.autoJoinDailyChallenge and dailyChallenge.canJoin()
         local enabled = state.autoJoinEvent and not dailyHasPriority
+        local inMatch, results, lobbyUi = gameUiState()
+
+        -- Match-ending flags are for the old match. Only recover when the lobby
+        -- UI is visible and the result/wave UI has been absent for several seconds.
+        if lobbyUi and not inMatch and not results then
+            lobbyStableSince = lobbyStableSince or now
+            if matchEnding and now - lobbyStableSince >= 8 then
+                matchEnding = false
+                print("[SatisHub] Auto Join Event: cleared stale match-ending state in lobby")
+            end
+        else
+            lobbyStableSince = nil
+        end
+
         if not enabled then
-            attempts = 0
-            nextAttemptAt = 0
-            pending = false
-            pendingSince = 0
+            attempts, nextAttemptAt, pending, pendingSince = 0, 0, false, 0
         elseif not lastEnabled then
-            -- Toggle changed from OFF to ON: start a new controlled request cycle.
-            attempts = 0
-            nextAttemptAt = 0
-            pending = false
+            attempts, nextAttemptAt, pending, pendingSince = 0, 0, false, 0
         end
         lastEnabled = enabled
 
-        if enabled and not matchEnding and not appearsToBeInMatch() then
-            local now = os.clock()
+        local reason
+        if not state.autoJoinEvent then
+            reason = "OFF"
+        elseif dailyHasPriority then
+            reason = "waiting for Daily Challenge priority"
+        elseif inMatch then
+            reason = "already in match"
+        elseif results then
+            reason = "results screen visible"
+        elseif matchEnding then
+            reason = "match-ending flag active"
+        elseif pending then
+            reason = "waiting for matchmaking/teleport"
+        elseif attempts >= MAX_ATTEMPTS then
+            reason = "attempt limit reached; switch OFF then ON to retry"
+        elseif now < nextAttemptAt then
+            reason = "cooldown before next attempt"
+        else
+            reason = "ready"
+        end
+        if reason ~= lastReason or now - reasonLoggedAt >= 60 then
+            print("[SatisHub] Auto Join Event: " .. reason)
+            lastReason, reasonLoggedAt = reason, now
+        end
+
+        if enabled and not matchEnding and not inMatch and not results then
             if pending and now - pendingSince >= PENDING_TIMEOUT then
                 pending = false
                 nextAttemptAt = now + FAILURE_COOLDOWN
-                warn("[SatisHub] Auto Join Event: no server transfer after 75s; will retry if still in lobby")
+                warn("[SatisHub] Auto Join Event: still in lobby after 75s; will retry")
             end
             if not pending and attempts < MAX_ATTEMPTS and now >= nextAttemptAt then
                 local eps = ReplicatedStorage:FindFirstChild("endpoints")
@@ -4864,27 +4904,24 @@ task.spawn(function()
                 attempts = attempts + 1
                 nextAttemptAt = now + FAILURE_COOLDOWN
                 if not (remote and remote:IsA("RemoteFunction")) then
-                    warn("[SatisHub] Auto Join Event: request_matchmaking unavailable (attempt " .. attempts .. "/" .. MAX_ATTEMPTS .. ")")
+                    warn("[SatisHub] Auto Join Event: matchmaking remote missing, attempt " .. attempts)
                 else
-                    pending = true
-                    pendingSince = now
+                    pending, pendingSince = true, now
                     local thisAttempt = attempts
+                    print("[SatisHub] Auto Join Event: sending event request " .. thisAttempt .. "/" .. MAX_ATTEMPTS)
                     task.spawn(function()
-                        local ok, result = pcall(function()
+                        local ok, reply = pcall(function()
                             return remote:InvokeServer("summer2_event")
                         end)
-                        if not alive() or not enabled or thisAttempt ~= attempts then return end
-                        if not ok or result == false then
+                        if not alive() or not state.autoJoinEvent or thisAttempt ~= attempts then return end
+                        if not ok or reply == false then
                             pending = false
                             nextAttemptAt = os.clock() + FAILURE_COOLDOWN
-                            warn("[SatisHub] Auto Join Event: matchmaking rejected/failed (" .. tostring(result) .. ")")
+                            warn("[SatisHub] Auto Join Event: failed: " .. tostring(reply))
                         else
-                            print("[SatisHub] Auto Join Event: matchmaking submitted; awaiting transfer")
+                            print("[SatisHub] Auto Join Event: request returned " .. tostring(reply) .. "; awaiting transfer")
                         end
                     end)
-                end
-                if attempts == MAX_ATTEMPTS then
-                    print("[SatisHub] Auto Join Event: reached max 3 requests; toggle OFF then ON to retry")
                 end
             end
         end
